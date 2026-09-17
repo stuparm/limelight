@@ -1,0 +1,24 @@
+# binaries
+/limelight
+/bin/
+/dist/
+
+# go
+*.test
+*.out
+coverage.*
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+
+# java / maven
+target/
+*.class
+
+# go workspace
+go.work.sum
+
+# example binary (go build in examples/go emits a file named "go")
+/examples/go/go
