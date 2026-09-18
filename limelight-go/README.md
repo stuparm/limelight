@@ -6,6 +6,7 @@ Go SDK. **The loop works end to end; the vet analyzer and the tag ladder do not 
 limelight.go, config.go, gate.go   registry, As(), the switch, the hot-path gate
 emitter.go, logemitter.go          Emitter contract + the stdlib slog backend
 control/                           http.Handler for the enable protocol
+control/auto/                      optional pprof-style blank-import registration
 analyzer/                          go/analysis pass — NOT IMPLEMENTED
 internal/directive/                //limelight:method parser
 internal/rewrite/                  the AST injection
@@ -24,7 +25,7 @@ Register an extractor per field, install an emitter, mount the control endpoint:
 ```go
 limelight.Register("projectID", project.IDFromContext, limelight.As("project.id"))
 limelight.SetEmitter(limelight.NewLogEmitter())
-mux.Handle(control.Prefix, control.Handler())
+control.Mount(mux)
 ```
 
 `NewLogEmitter` takes a `*slog.Logger`, never a handler constructor, so every handler in
@@ -81,7 +82,33 @@ imports it, a dependency here is a dependency everywhere. Backends that carry on
 (`otel`, `zap`) get their own package and their own `go.mod`; they import this, never the
 reverse.
 
-`control.Handler()` is **not safe to expose as-is**: it turns on emission of user
+If your router is not a `*http.ServeMux` — gin, echo, chi, gorilla — wrap it instead;
+this works with anything that is an `http.Handler`:
+
+```go
+srv := &http.Server{Handler: control.Wrap(myRouter)}
+```
+
+`control.Handler()` returns the routes bare, for mounting them yourself behind your own
+auth middleware or on an admin-only listener.
+
+Or register it the way `net/http/pprof` does, as a side effect of an import:
+
+```go
+import _ "github.com/stuparm/limelight/limelight-go/control/auto"
+```
+
+That puts the routes on `http.DefaultServeMux`, so it only works if you serve that mux —
+gin, echo, chi and grpc-gateway all serve their own, and against those the import compiles
+and then 404s. It is a separate package, not an `init()` in `control/`, so that the import
+site says what it is doing: importing `control/` arms nothing, importing `control/auto`
+arms the endpoint.
+
+It also leaves nowhere to put authentication, since the routes are registered before
+`main` runs. The intended shape is a separate admin listener that is not routable from
+outside — `examples/go` does exactly this, gin on `:8080` and limelight on `:6060`.
+
+The endpoint is **not safe to expose as-is**: it turns on emission of user
 identifiers and can flood a logging bill. Wrap it in authentication, a rate limit and an
 audit log. It does enforce the two limits that hurt even an authenticated operator — a
 1h TTL cap and a rejection of empty targeting.

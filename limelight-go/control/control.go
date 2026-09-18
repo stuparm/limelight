@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	limelight "github.com/stuparm/limelight/limelight-go"
@@ -47,9 +48,45 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// Handler returns the control routes. Mount it on the prefix it expects:
+// Mux is the part of *http.ServeMux that Mount needs. Any router with the same
+// Handle signature satisfies it.
+type Mux interface {
+	Handle(pattern string, handler http.Handler)
+}
+
+// Mount registers the control routes on mux. It is the usual way in:
 //
-//	mux.Handle(control.Prefix, control.Handler())
+//	mux := http.NewServeMux()
+//	control.Mount(mux)
+//
+// Deliberately not an init() that registers on http.DefaultServeMux, the way
+// net/http/pprof does. This endpoint turns on emission of user identifiers, so
+// arming it must be something a service did on purpose — not something a
+// transitive import did to it. It would also be unreliable: most services never
+// serve DefaultServeMux, so the blank import would quietly do nothing.
+func Mount(mux Mux) {
+	mux.Handle(Prefix, Handler())
+}
+
+// Wrap returns a handler that serves the control routes and passes everything
+// else to next. Use it when the router is not a *http.ServeMux — gin, echo, chi
+// and gorilla all satisfy http.Handler even where they do not satisfy Mux:
+//
+//	srv := &http.Server{Handler: control.Wrap(myRouter)}
+func Wrap(next http.Handler) http.Handler {
+	control := Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, Prefix) {
+			control.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Handler returns the control routes as a plain http.Handler, for a service
+// that wants to mount them itself — behind its own auth middleware, on an
+// admin-only listener, or under a different prefix.
 func Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+Prefix+"enable", enable)

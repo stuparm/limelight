@@ -126,3 +126,48 @@ func TestEnableIsPostOnly(t *testing.T) {
 		t.Errorf("GET enable: status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+func TestMount(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	mux := http.NewServeMux()
+	control.Mount(mux)
+
+	req := httptest.NewRequest(http.MethodPost, control.Prefix+"enable",
+		strings.NewReader(`{"version":0,"ttl":"10m","match":{"projectID":"abc-123"}}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
+	}
+	if !limelight.Current().Enabled {
+		t.Error("Mount registered the routes but the switch did not flip")
+	}
+}
+
+// Wrap has to serve the control routes and leave every other path to the app.
+func TestWrapPassesEverythingElseThrough(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	app := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("app"))
+	})
+	h := control.Wrap(app)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/things", nil))
+	if got := rec.Body.String(); got != "app" {
+		t.Errorf("app route returned %q, want %q", got, "app")
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, control.Prefix+"status", nil))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "app") {
+		t.Errorf("control route fell through to the app: %d %s", rec.Code, rec.Body)
+	}
+
+	// A path that merely starts with "/debug" is the app's business, not ours.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debugging", nil))
+	if got := rec.Body.String(); got != "app" {
+		t.Errorf("/debugging returned %q, want %q", got, "app")
+	}
+}
