@@ -22,3 +22,6 @@ go.work.sum
 
 # example binary (go build in examples/go emits a file named "go")
 /examples/go/go
+
+# claude code (local, personal)
+CLAUDE.local.md

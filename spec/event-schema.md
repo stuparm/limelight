@@ -19,7 +19,19 @@ Emitters are templates, not hardcoded OTel: ship `slog`, `otel` and `zap`
 implementations and let teams write one for their house logger. The schema above is
 what every template must produce, whatever the backend's on-the-wire shape.
 
-## Open in v0
+## Settled in v0 by the Go SDK
 
-- Entry-only, or entry + exit with duration and error?
-- Does the method name follow a convention, or is it whatever the directive says?
+- **Entry-only.** Entry + exit would carry duration and error, but it needs a `defer` in
+  every tagged method, and the `defer` is what turns the inlining cost from a budget
+  charge into an unconditional loss. See [`../docs/design.md`](../docs/design.md). Not
+  closed — reopen it with a measurement, not an argument.
+- **The method name is derived, not declared:** `<package>.<Receiver>.<Method>`, or
+  `<package>.<Function>` for a plain function. The directive names fields and nothing
+  else, so two SDKs cannot disagree about what a method is called.
+
+## Still open
+
+- `trace_id` / `span_id` are specified here but the slog emitter leaves them empty:
+  reading them needs an OpenTelemetry dependency and the runtime package is
+  dependency-light. The otel emitter is where they get filled in, and until it exists the
+  join this schema promises is not real.

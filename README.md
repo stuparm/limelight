@@ -19,6 +19,13 @@ POST /debug/limelight/enable
 { "version": 0, "ttl": "10m", "match": { "projectID": "abc-123" } }
 ```
 
+The tag takes effect through `-toolexec`, so an ordinary build applies it and no
+rewritten source is ever left on disk:
+
+```
+go run -toolexec="/tmp/limelight toolexec" .
+```
+
 The tag names a **registered extractor**, not a raw context key — which is what makes it
 work in any codebase:
 
@@ -44,7 +51,20 @@ the field contract and the enable protocol do not.
 
 ## Status
 
-Design settled, nothing implemented. The directory skeleton compiles; that is all.
+**The Go loop works end to end**: tag a method, build through the shim, POST the enable
+endpoint, watch the targeted identity emit and nothing else, watch it stop at the TTL.
+[`examples/go`](examples/go/) is that walkthrough.
+
+Not built yet, and each one is load-bearing for a real adoption:
+
+- the **`go vet` analyzer** — without it a tag that cannot work is silently ignored,
+  which is the failure mode limelight exists to prevent
+- **emitter templates** — there is one hand-written slog emitter, no template mechanism
+- **`trace_id` / `span_id`** — the slog emitter leaves them empty, so the join to
+  existing traces that [`spec/event-schema.md`](spec/event-schema.md) promises is not
+  real yet
+- the **`methods` glob** in the enable protocol, which returns 501
+- **limelight-java** — still a skeleton
 
 ## License
 

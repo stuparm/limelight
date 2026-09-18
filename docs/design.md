@@ -49,7 +49,8 @@ fine, because requirement 2 only asks for named fields.
 
 [golang/go#69887](https://github.com/golang/go/issues/69887) proposes first-class
 compile-time instrumentation in `cmd/go`. If it lands, anything built on `-toolexec`
-rebases or dies — an argument for staying in source-rewrite land.
+rebases or dies. That was the argument that originally pointed at source rewrite; see
+**Decisions** for why it lost and what keeps the rebase cheap.
 
 ## Decisions
 
@@ -67,13 +68,32 @@ their own.
 the build is silently ignored — a user tags 200 methods and sees nothing. The analyzer is
 what makes the tag trustworthy.
 
-**Source rewrite, not `-toolexec`**, for v0. See go#69887 above.
+**`-toolexec`, not source rewrite**, for v0 — reversed 2026-09-17, having originally
+decided the opposite. The tag takes effect inside an ordinary `go build` / `go run` and
+no rewritten source is ever left on disk. The price is a build-graph constraint source
+rewrite does not have: `cmd/go` computes each package's `importcfg` before the shim is
+invoked and will not add to it, so **a package containing a tagged method must already
+import the limelight runtime**. The shim detects this and fails with the import line to
+add rather than emitting code that cannot compile. go#69887 above remains the standing
+risk, and the reason the rewriter is a library the shim calls rather than a thing welded
+to `-toolexec`.
 
 ## Costs, stated rather than discovered
 
-- **Lost inlining**, permanent, on or off — the injected `defer` does it.
-- ~1–2 ns per tagged call when off: one atomic load and a branch. For the TTL, never call
-  `time.Now()` per invocation — keep an `atomic.Pointer[config]` and let a ticker nil it.
+- **Inlining: a budget cost, not the unconditional loss first assumed.** Measured on
+  go1.27.1/arm64, the injected gate takes a method from inline cost 5 to 69 against the
+  inliner's budget of 80 — so a method whose own cost is ≤16 still inlines and anything
+  larger falls out. This holds *only* while emission is entry-only. Entry + exit needs a
+  `defer`, and the `defer` is what makes the loss permanent and unconditional; that
+  trade is the real content of the entry-vs-exit question in
+  [`../spec/event-schema.md`](../spec/event-schema.md).
+- **~1.2 ns per tagged call when off**, zero allocations (M1 Pro). Reaching that is why
+  generated code is `if limelight.On() { limelight.Emit(...) }` rather than a bare
+  `Emit`: `Emit` is variadic, so an unguarded call makes the caller build the field-name
+  slice before `Emit` can decide it has nothing to do — 4.9 ns against 1.2 ns, on every
+  tagged call, for the ~100% of calls where the switch is off. `On` is a single atomic
+  load and inlines into the caller. For the TTL, never call `time.Now()` per invocation —
+  an `atomic.Pointer[config]` that a timer nils.
 - **A REST toggle behind a load balancer enables one pod.** v0 is honest per-pod scope.
 - **Security:** the endpoint turns on emission of user identifiers and can flood a logging
   bill. Authenticate, rate-limit, cap the TTL server-side, audit.
