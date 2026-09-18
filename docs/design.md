@@ -61,8 +61,19 @@ different package cannot reference them. See [`../spec/field-contract.md`](../sp
 **Field names map onto OTel semantic conventions.** `user.id`, not `userID`. This is what
 makes requirement 3 real.
 
-**Emitters are templates, not hardcoded OTel.** Ship slog, otel and zap; let teams write
-their own.
+**Emitters are an interface, not templates** — revised 2026-09-18. The contract lives in
+the root package, and an implementation ships beside it *iff* it costs no dependency
+beyond stdlib; `NewLogEmitter` (slog) qualifies, otel and zap get their own packages and
+their own `go.mod`. The template model was borrowed from gowrap, which generates
+*decorators* that must match the user's own interfaces — but `Emitter` has one fixed
+signature, so there is nothing shape-dependent to generate and `EmitterFunc` is the escape
+hatch instead.
+
+This placement is forced by `-toolexec`, not chosen for tidiness: every package holding a
+tagged method must import the root package, so anything root depends on lands in the
+dependency graph of every instrumented leaf package. An OTel-backed emitter in a
+subpackage that root imported would put OpenTelemetry there — invisibly, until the first
+non-stdlib backend landed.
 
 **A `go vet` analyzer ships from day one.** A bare comment directive with no tooling in
 the build is silently ignored — a user tags 200 methods and sees nothing. The analyzer is

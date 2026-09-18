@@ -23,7 +23,6 @@ import (
 
 	limelight "github.com/stuparm/limelight/limelight-go"
 	"github.com/stuparm/limelight/limelight-go/control"
-	"github.com/stuparm/limelight/limelight-go/emit"
 )
 
 type projectIDKey struct{}
@@ -57,7 +56,9 @@ const addr = "localhost:8080"
 func main() {
 	limelight.Register("projectID", ProjectIDFromContext, limelight.As("project.id"))
 	limelight.Register("userID", UserIDFromContext, limelight.As("user.id"))
-	limelight.SetEmitter(emit.Slog(slog.New(slog.NewJSONHandler(os.Stdout, nil))))
+	limelight.SetEmitter(limelight.NewLogEmitter(
+		limelight.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
+	))
 
 	mux := http.NewServeMux()
 	mux.Handle(control.Prefix, control.Handler())

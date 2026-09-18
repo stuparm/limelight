@@ -3,12 +3,10 @@ package limelight
 import (
 	"context"
 	"sync/atomic"
-
-	"github.com/stuparm/limelight/limelight-go/emit"
 )
 
 // emitterHolder boxes the interface so it fits in an atomic.Pointer.
-type emitterHolder struct{ e emit.Emitter }
+type emitterHolder struct{ e Emitter }
 
 var emitter atomic.Pointer[emitterHolder]
 
@@ -17,9 +15,9 @@ var emitter atomic.Pointer[emitterHolder]
 // an emitter stays silent rather than writing somewhere surprising.
 //
 // A nil e restores that discarding behaviour.
-func SetEmitter(e emit.Emitter) {
+func SetEmitter(e Emitter) {
 	if e == nil {
-		e = emit.Discard
+		e = DiscardEmitter
 	}
 	emitter.Store(&emitterHolder{e: e})
 }
@@ -70,8 +68,8 @@ func Emit(ctx context.Context, method string, names ...string) {
 		fields[f.attrKey] = v
 	}
 
-	h.e.Emit(ctx, emit.Event{
-		Version: emit.Version,
+	h.e.Emit(ctx, Event{
+		Version: EventVersion,
 		Method:  method,
 		Fields:  fields,
 	})

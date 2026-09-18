@@ -25,7 +25,10 @@ because a package is named after it.
   See `spec/field-contract.md`.
 - **Emitted attribute names follow OTel semantic conventions** — `user.id`, not
   `userID`. This is what makes the output joinable downstream.
-- **Emitters are templates**, not hardcoded OTel backends.
+- **The `Emitter` contract lives in the root package**, and a backend ships
+  beside it only if it costs nothing but stdlib. Root is imported by every
+  package holding a tagged method, so a dependency here is a dependency
+  everywhere; otel/zap backends get their own package and `go.mod`.
 - **A package with a tagged method must already import the runtime.** `cmd/go`
   resolves dependencies before `-toolexec` runs and will not add to them, so
   injected code can only call a package that is already in the build graph.

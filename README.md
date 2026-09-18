@@ -59,7 +59,9 @@ Not built yet, and each one is load-bearing for a real adoption:
 
 - the **`go vet` analyzer** — without it a tag that cannot work is silently ignored,
   which is the failure mode limelight exists to prevent
-- **emitter templates** — there is one hand-written slog emitter, no template mechanism
+- the **tag ladder** — only `//limelight:method` exists; `:package`, `:type` and `:skip`
+  are parsed as non-directives and ignored **with no warning at all**, which is the exact
+  failure mode limelight exists to prevent
 - **`trace_id` / `span_id`** — the slog emitter leaves them empty, so the join to
   existing traces that [`spec/event-schema.md`](spec/event-schema.md) promises is not
   real yet

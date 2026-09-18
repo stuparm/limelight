@@ -20,7 +20,6 @@ import (
 	"time"
 
 	limelight "github.com/stuparm/limelight/limelight-go"
-	"github.com/stuparm/limelight/limelight-go/emit"
 )
 
 type projectIDKey struct{}
@@ -41,7 +40,7 @@ func (s *S) M(ctx context.Context, boom bool) {
 
 func main() {
 	limelight.Register("projectID", ProjectIDFromContext, limelight.As("project.id"))
-	limelight.SetEmitter(emit.Slog(slog.New(slog.NewJSONHandler(os.Stdout, nil))))
+	limelight.SetEmitter(limelight.NewLogEmitter(limelight.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))))
 	if _, err := limelight.Enable(limelight.Config{
 		TTL:   time.Minute,
 		Match: map[string]string{"projectID": "abc-123"},

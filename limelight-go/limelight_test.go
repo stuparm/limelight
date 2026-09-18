@@ -6,23 +6,21 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stuparm/limelight/limelight-go/emit"
 )
 
 // collector is an Emitter that remembers what it was handed.
 type collector struct {
 	mu     sync.Mutex
-	events []emit.Event
+	events []Event
 }
 
-func (c *collector) Emit(_ context.Context, ev emit.Event) {
+func (c *collector) Emit(_ context.Context, ev Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, ev)
 }
 
-func (c *collector) drain() []emit.Event {
+func (c *collector) drain() []Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := c.events
@@ -100,8 +98,8 @@ func TestEmitOnlyForTheTargetedIdentity(t *testing.T) {
 	if got[0].Method != "p.S.M" {
 		t.Errorf("Method = %q, want %q", got[0].Method, "p.S.M")
 	}
-	if got[0].Version != emit.Version {
-		t.Errorf("Version = %d, want %d", got[0].Version, emit.Version)
+	if got[0].Version != EventVersion {
+		t.Errorf("Version = %d, want %d", got[0].Version, EventVersion)
 	}
 	// As() is what makes the downstream join work; the registered name must not
 	// leak into the output.

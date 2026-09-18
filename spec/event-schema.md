@@ -15,9 +15,11 @@ traces depends on them, and without it the output is just more logs.
 }
 ```
 
-Emitters are templates, not hardcoded OTel: ship `slog`, `otel` and `zap`
-implementations and let teams write one for their house logger. The schema above is
-what every template must produce, whatever the backend's on-the-wire shape.
+An emitter is an interface with one method, not a template: ship a stdlib backend, let a
+team write one for its house logger in a few lines, and keep third-party backends
+(`otel`, `zap`) in their own packages so no SDK forces a dependency on a service that
+does not use it. The schema above is what every backend must produce, whatever its
+on-the-wire shape.
 
 ## Settled in v0 by the Go SDK
 
