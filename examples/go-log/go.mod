@@ -1,4 +1,4 @@
-module github.com/stuparm/limelight/examples/go
+module github.com/stuparm/limelight/examples/go-log
 
 go 1.25.0
 

@@ -38,10 +38,10 @@ because a package is named after it.
 ## Commands
 
 The repo root is **not** a module, so `go build ./...` fails there. `go.work`
-lists the two Go modules and wires `examples/go` to the local SDK source.
+lists the four Go modules and wires the examples to the local SDK source.
 
 ```bash
-go build ./limelight-go/... ./examples/go/...   # from the root
+go build ./limelight-go/... ./examples/go-log/... ./examples/go-log-zap/...   # from the root
 cd limelight-go && go test ./...                # tests live here
 cd limelight-java && mvn -q verify
 ```
@@ -51,7 +51,7 @@ shim. A plain `go build` compiles it as a comment and emits nothing:
 
 ```bash
 go build -o /tmp/limelight ./limelight-go/cmd/limelight
-cd examples/go && go run -toolexec="/tmp/limelight toolexec" .
+cd examples/go-log && go run -toolexec="/tmp/limelight toolexec" .
 ```
 
 `LIMELIGHT_VERBOSE=1` makes the shim report each method it instruments.

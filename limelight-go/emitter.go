@@ -49,7 +49,45 @@ type EmitterFunc func(ctx context.Context, ev Event)
 // Emit implements Emitter.
 func (f EmitterFunc) Emit(ctx context.Context, ev Event) { f(ctx, ev) }
 
+// MultiEmitter fans one event out to several emitters, in order. It is how a
+// service sends events to its logs and to its traces at once:
+//
+//	limelight.SetEmitter(limelight.MultiEmitter(
+//		limelight.NewLogEmitter(),
+//		limelightotel.New(),
+//	))
+//
+// A nil or empty list returns DiscardEmitter.
+func MultiEmitter(emitters ...Emitter) Emitter {
+	live := make([]Emitter, 0, len(emitters))
+	for _, e := range emitters {
+		if e != nil {
+			live = append(live, e)
+		}
+	}
+	if len(live) == 0 {
+		return DiscardEmitter
+	}
+	if len(live) == 1 {
+		return live[0]
+	}
+	return EmitterFunc(func(ctx context.Context, ev Event) {
+		for _, e := range live {
+			e.Emit(ctx, ev)
+		}
+	})
+}
+
+type discardEmitter struct{}
+
+func (discardEmitter) Emit(context.Context, Event) {}
+
 // DiscardEmitter drops every event. It is what SetEmitter installs for a nil
 // emitter, and what an instrumented binary that never configured one uses — so
 // the default is silence rather than output in a place nobody chose.
-var DiscardEmitter Emitter = EmitterFunc(func(context.Context, Event) {})
+//
+// Its type is a struct rather than an EmitterFunc so that it stays comparable:
+// func values are not, so `e == DiscardEmitter` would panic at run time rather
+// than answer the question. slog.DiscardHandler is a struct for the same
+// reason.
+var DiscardEmitter Emitter = discardEmitter{}

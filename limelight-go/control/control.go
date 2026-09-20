@@ -15,9 +15,11 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -29,19 +31,30 @@ import (
 // carrying anything else is rejected rather than guessed at.
 const ProtocolVersion = 0
 
-// MaxTTL is the server-side cap. The spec suggests an hour; a caller asking for
-// more gets an error, not a silent truncation, so nobody believes they armed a
-// longer window than they did.
+// MaxTTL is the server-side cap on a targeted activation. The spec suggests an
+// hour; a caller asking for more gets an error, not a silent truncation, so
+// nobody believes they armed a longer window than they did.
 const MaxTTL = time.Hour
+
+// MaxMatchAllTTL is the cap when match_all is set. A firehose emits user
+// identifiers for every request the process serves, so it is bounded far more
+// tightly than a targeted activation — long enough to answer "is anything
+// coming through at all", not long enough to fill a log bill.
+const MaxMatchAllTTL = time.Minute
+
+// maxBodyBytes bounds the request body. It is read whole because the protocol
+// version has to be inspected before the rest is decoded.
+const maxBodyBytes = 1 << 16
 
 // Prefix is where the routes live.
 const Prefix = "/debug/limelight/"
 
 type enableRequest struct {
-	Version *int              `json:"version"`
-	TTL     string            `json:"ttl"`
-	Match   map[string]string `json:"match"`
-	Methods []string          `json:"methods"`
+	Version  *int              `json:"version"`
+	TTL      string            `json:"ttl"`
+	Match    map[string]string `json:"match"`
+	MatchAll bool              `json:"match_all"`
+	Methods  []string          `json:"methods"`
 }
 
 type errorResponse struct {
@@ -96,22 +109,41 @@ func Handler() http.Handler {
 }
 
 func enable(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "reading body: %v", err)
+		return
+	}
+
+	// The protocol version is read before anything else, and deliberately with
+	// a lenient decoder. A client speaking a later version sends fields this
+	// build has never heard of; decoding strictly first would answer it with a
+	// complaint about an unknown field and never mention versions — which is
+	// useless to the one caller the version field exists to serve.
+	var probe struct {
+		Version *int `json:"version"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed body: %v", err)
+		return
+	}
+	if probe.Version == nil {
+		writeError(w, http.StatusBadRequest, "missing %q; this handler speaks version %d", "version", ProtocolVersion)
+		return
+	}
+	if *probe.Version != ProtocolVersion {
+		writeError(w, http.StatusBadRequest, "unsupported protocol version %d; this handler speaks %d", *probe.Version, ProtocolVersion)
+		return
+	}
+
 	var req enableRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed body: %v", err)
 		return
 	}
 
-	if req.Version == nil {
-		writeError(w, http.StatusBadRequest, "missing %q; this handler speaks version %d", "version", ProtocolVersion)
-		return
-	}
-	if *req.Version != ProtocolVersion {
-		writeError(w, http.StatusBadRequest, "unsupported protocol version %d; this handler speaks %d", *req.Version, ProtocolVersion)
-		return
-	}
 	if len(req.Methods) > 0 {
 		// Honest 501 over silent acceptance: a caller who scoped a firehose to
 		// one method glob and got everything would be worse off than one who
@@ -125,16 +157,25 @@ func enable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%q must be a duration string such as \"10m\": %v", "ttl", err)
 		return
 	}
-	if ttl > MaxTTL {
-		writeError(w, http.StatusBadRequest, "%q of %s exceeds the server cap of %s", "ttl", ttl, MaxTTL)
+	maxTTL := MaxTTL
+	if req.MatchAll {
+		maxTTL = MaxMatchAllTTL
+	}
+	if ttl > maxTTL {
+		if req.MatchAll {
+			writeError(w, http.StatusBadRequest, "%q of %s exceeds the %s cap of %s", "ttl", ttl, "match_all", maxTTL)
+			return
+		}
+		writeError(w, http.StatusBadRequest, "%q of %s exceeds the server cap of %s", "ttl", ttl, maxTTL)
 		return
 	}
 
-	state, err := limelight.Enable(limelight.Config{TTL: ttl, Match: req.Match})
+	state, err := limelight.Enable(limelight.Config{TTL: ttl, Match: req.Match, MatchAll: req.MatchAll})
 	if err != nil {
 		var unregistered *limelight.UnregisteredFieldError
 		switch {
 		case errors.Is(err, limelight.ErrEmptyMatch),
+			errors.Is(err, limelight.ErrMatchAndMatchAll),
 			errors.Is(err, limelight.ErrNonPositiveTTL),
 			errors.As(err, &unregistered):
 			writeError(w, http.StatusBadRequest, "%v", err)

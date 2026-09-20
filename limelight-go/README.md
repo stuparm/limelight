@@ -7,6 +7,8 @@ limelight.go, config.go, gate.go   registry, As(), the switch, the hot-path gate
 emitter.go, logemitter.go          Emitter contract + the stdlib slog backend
 control/                           http.Handler for the enable protocol
 control/auto/                      optional pprof-style blank-import registration
+limelightzap/                      zap backend — its own module, so zap stays out
+                                   of the go.sum of services that do not use it
 analyzer/                          go/analysis pass — NOT IMPLEMENTED
 internal/directive/                //limelight:method parser
 internal/rewrite/                  the AST injection
@@ -37,6 +39,23 @@ limelight.SetEmitter(limelight.NewLogEmitter(
 	limelight.WithLevel(slog.LevelDebug),
 ))
 ```
+
+For zap, there is a backend in its own module:
+
+```go
+import "github.com/stuparm/limelight/limelight-go/limelightzap"
+
+logger, _ := zap.NewProduction()
+limelight.SetEmitter(limelightzap.New(logger))
+```
+
+```
+go get github.com/stuparm/limelight/limelight-go/limelightzap
+```
+
+It is a separate module rather than a package here, so that zap reaches only the services
+that ask for it — a service logging with slog has no `go.sum` entry for it, and none for
+anything else either.
 
 For a house logger, implement the interface — it has one method:
 
@@ -78,8 +97,9 @@ That is one blank import per package, not per method — but it is a visible dif
 packages that otherwise have nothing to do with observability.
 
 **This module is stdlib-only, and stays that way.** Because every tagged leaf package
-imports it, a dependency here is a dependency everywhere. Backends that carry one
-(`otel`, `zap`) get their own package and their own `go.mod`; they import this, never the
+imports it, a dependency here is a dependency everywhere. Its `go.mod` has no `require`
+block at all, and a service importing it gets no `go.sum`. Backends carrying a dependency
+(`limelightzap`, and otel later) live in their own modules; they import this, never the
 reverse.
 
 If your router is not a `*http.ServeMux` — gin, echo, chi, gorilla — wrap it instead;
@@ -106,7 +126,7 @@ arms the endpoint.
 
 It also leaves nowhere to put authentication, since the routes are registered before
 `main` runs. The intended shape is a separate admin listener that is not routable from
-outside — `examples/go` does exactly this, gin on `:8080` and limelight on `:6060`.
+outside — `examples/go-log` does exactly this, gin on `:8080` and limelight on `:6060`.
 
 The endpoint is **not safe to expose as-is**: it turns on emission of user
 identifiers and can flood a logging bill. Wrap it in authentication, a rate limit and an

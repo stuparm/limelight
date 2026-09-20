@@ -21,9 +21,20 @@ type Config struct {
 	// extractors that produce output, so targeting and emission can never
 	// disagree.
 	//
-	// Required and non-empty: an empty Match means "every request on this
-	// process", which is a firehose nobody asks for by accident.
+	// Exactly one of Match and MatchAll must be set.
 	Match map[string]string
+
+	// MatchAll emits for every call to a tagged method, whatever identity it
+	// carries. It is the firehose, and it is a separate field rather than an
+	// empty Match so that it cannot be produced by an upstream bug: an empty
+	// map is what a dropped field marshals to, and the cheapest mistake in a
+	// pipeline should not be the most expensive outcome.
+	//
+	// Legitimate uses are real — an incident where the identity is not known
+	// yet, or checking that the instrumentation works at all before any
+	// targeting value is in hand — so callers are expected to pair it with a
+	// short TTL.
+	MatchAll bool
 }
 
 // State is what the switch reports about itself — the response body of the
@@ -32,15 +43,19 @@ type State struct {
 	Enabled bool `json:"enabled"`
 	// Scope is "pod": a POST behind a load balancer reaches exactly one
 	// replica. v0 is honest about that rather than implying cluster scope.
-	Scope     string     `json:"scope,omitempty"`
-	Instance  string     `json:"instance,omitempty"`
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	// Targeting is "matched" or "all". It is reported so that an audit log of
+	// enable responses shows plainly which activations were firehoses.
+	Targeting string     `json:"targeting,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // active is the immutable snapshot the hot path reads. Replaced wholesale, never
 // mutated, so Emit needs one atomic load and no lock.
 type active struct {
 	match     map[string]string
+	matchAll  bool
 	expiresAt time.Time
 }
 
@@ -54,9 +69,13 @@ var (
 	instanceID   string
 )
 
-// ErrEmptyMatch is returned when Enable is called without targeting. See
-// Config.Match.
-var ErrEmptyMatch = errors.New("limelight: Config.Match must name at least one field — an empty match is a firehose")
+// ErrEmptyMatch is returned when Enable is called with no targeting at all.
+// See Config.Match and Config.MatchAll.
+var ErrEmptyMatch = errors.New("limelight: set Config.Match to target an identity, or Config.MatchAll to emit for every call")
+
+// ErrMatchAndMatchAll is returned when both are set. They mean opposite things
+// and picking one would be a guess.
+var ErrMatchAndMatchAll = errors.New("limelight: Config.Match and Config.MatchAll are mutually exclusive")
 
 // ErrNonPositiveTTL is returned when Enable is called without a bound.
 var ErrNonPositiveTTL = errors.New("limelight: Config.TTL must be positive")
@@ -80,7 +99,10 @@ func Enable(cfg Config) (State, error) {
 	if cfg.TTL <= 0 {
 		return State{}, ErrNonPositiveTTL
 	}
-	if len(cfg.Match) == 0 {
+	if cfg.MatchAll && len(cfg.Match) > 0 {
+		return State{}, ErrMatchAndMatchAll
+	}
+	if !cfg.MatchAll && len(cfg.Match) == 0 {
 		return State{}, ErrEmptyMatch
 	}
 	match := make(map[string]string, len(cfg.Match))
@@ -92,7 +114,7 @@ func Enable(cfg Config) (State, error) {
 	}
 
 	expiresAt := time.Now().Add(cfg.TTL)
-	a := &active{match: match, expiresAt: expiresAt}
+	a := &active{match: match, matchAll: cfg.MatchAll, expiresAt: expiresAt}
 	current.Store(a)
 
 	timerMu.Lock()
@@ -104,7 +126,20 @@ func Enable(cfg Config) (State, error) {
 	// timer fires must not be turned off by the older activation's expiry.
 	timer = time.AfterFunc(cfg.TTL, func() { current.CompareAndSwap(a, nil) })
 
-	return State{Enabled: true, Scope: "pod", Instance: Instance(), ExpiresAt: &expiresAt}, nil
+	return State{
+		Enabled:   true,
+		Scope:     "pod",
+		Instance:  Instance(),
+		Targeting: targeting(cfg.MatchAll),
+		ExpiresAt: &expiresAt,
+	}, nil
+}
+
+func targeting(matchAll bool) string {
+	if matchAll {
+		return "all"
+	}
+	return "matched"
 }
 
 // Disable turns emission off immediately.
@@ -126,7 +161,13 @@ func Current() State {
 		return State{Enabled: false, Scope: "pod", Instance: Instance()}
 	}
 	expiresAt := a.expiresAt
-	return State{Enabled: true, Scope: "pod", Instance: Instance(), ExpiresAt: &expiresAt}
+	return State{
+		Enabled:   true,
+		Scope:     "pod",
+		Instance:  Instance(),
+		Targeting: targeting(a.matchAll),
+		ExpiresAt: &expiresAt,
+	}
 }
 
 // Instance identifies this process in an enable response, so a user who POSTs

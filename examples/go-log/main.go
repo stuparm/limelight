@@ -124,8 +124,12 @@ func main() {
     curl -sS -XPOST http://%s/debug/limelight/enable \
       -d '{"version":0,"ttl":"30s","match":{"projectID":"abc-123"}}'
 
+  or, when you do not know the identity yet, trace everything for 10 seconds:
+    curl -sS -XPOST http://%s/debug/limelight/enable \
+      -d '{"version":0,"ttl":"10s","match_all":true}'
+
 Requests from any other project run through the same tagged method and stay silent.
-`, appAddr, adminAddr, appAddr, adminAddr)
+`, appAddr, adminAddr, appAddr, adminAddr, adminAddr)
 
 	log.Fatal(r.Run(appAddr))
 }

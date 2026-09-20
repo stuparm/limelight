@@ -1,4 +1,4 @@
-# Go example
+# Go example — slog
 
 A service shaped like a real one: a **gin** REST API on `:8080`, and limelight's control
 endpoint on a **separate admin listener** on `:6060`. Two listeners, two ports, one
@@ -40,6 +40,18 @@ Repeat the two `POST /api/things` calls, one as `abc-123` and one as any other p
 
 Only the targeted project emits. Every other request runs through the same tagged method
 and stays silent. Thirty seconds later the switch turns itself off.
+
+If you do not know an identity yet — an incident, or just checking the instrumentation
+works at all — ask for everything instead:
+
+```
+curl -sS -XPOST localhost:6060/debug/limelight/enable \
+  -d '{"version":0,"ttl":"10s","match_all":true}'
+```
+
+`match_all` is a named field rather than an empty `match`, because an empty map is what a
+dropped field marshals to and the cheapest bug should not produce the most expensive
+outcome. It is capped at 60s against the hour allowed for a targeted trace.
 
 `GET /debug/limelight/status` reports whether it is on and until when;
 `POST /debug/limelight/disable` stops it early. Both on `:6060`.

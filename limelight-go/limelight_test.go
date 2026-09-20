@@ -251,3 +251,128 @@ func benchSetup() context.Context {
 	Disable()
 	return ctxWith("abc-123", "u-42")
 }
+
+func TestMatchAllEmitsForEveryIdentity(t *testing.T) {
+	c := reset(t)
+	registerBoth()
+	state, err := Enable(Config{TTL: time.Minute, MatchAll: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Targeting != "all" {
+		t.Errorf("Targeting = %q, want %q — an audit log could not tell this was a firehose", state.Targeting, "all")
+	}
+
+	Emit(ctxWith("abc-123", "u-42"), "p.S.M", "projectID")
+	Emit(ctxWith("zzz-999", "u-7"), "p.S.M", "projectID")
+	// Even a request carrying none of the registered fields emits: there is no
+	// targeting to fail.
+	Emit(context.Background(), "p.S.M", "projectID")
+
+	if got := c.drain(); len(got) != 3 {
+		t.Fatalf("got %d events, want 3", len(got))
+	}
+}
+
+func TestMatchAllStillExpires(t *testing.T) {
+	c := reset(t)
+	registerBoth()
+	if _, err := Enable(Config{TTL: 50 * time.Millisecond, MatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for Current().Enabled {
+		if time.Now().After(deadline) {
+			t.Fatal("a firehose outlived its TTL")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.drain()
+	Emit(ctxWith("abc-123", "u-42"), "p.S.M", "projectID")
+	if got := c.drain(); len(got) != 0 {
+		t.Fatalf("emitted after expiry: %+v", got)
+	}
+}
+
+func TestMatchAndMatchAllAreMutuallyExclusive(t *testing.T) {
+	reset(t)
+	registerBoth()
+	_, err := Enable(Config{
+		TTL:      time.Minute,
+		Match:    map[string]string{"projectID": "abc-123"},
+		MatchAll: true,
+	})
+	if !errors.Is(err, ErrMatchAndMatchAll) {
+		t.Errorf("err = %v, want ErrMatchAndMatchAll", err)
+	}
+	if Current().Enabled {
+		t.Error("an ambiguous request turned the switch on")
+	}
+}
+
+func TestTargetedActivationReportsMatchedTargeting(t *testing.T) {
+	reset(t)
+	registerBoth()
+	state, err := Enable(Config{TTL: time.Minute, Match: map[string]string{"projectID": "abc-123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Targeting != "matched" {
+		t.Errorf("Targeting = %q, want %q", state.Targeting, "matched")
+	}
+}
+
+func TestMultiEmitter(t *testing.T) {
+	reset(t)
+	registerBoth()
+	a, b := &collector{}, &collector{}
+	SetEmitter(MultiEmitter(a, nil, b)) // a nil emitter is skipped, not a panic
+	if _, err := Enable(Config{TTL: time.Minute, MatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	Emit(ctxWith("abc-123", "u-42"), "p.S.M", "projectID")
+
+	if len(a.drain()) != 1 || len(b.drain()) != 1 {
+		t.Error("the event did not reach both emitters")
+	}
+	if MultiEmitter() != DiscardEmitter {
+		t.Error("an empty MultiEmitter should discard")
+	}
+}
+
+func TestTraceContextFuncFillsTheEvent(t *testing.T) {
+	c := reset(t)
+	registerBoth()
+	SetTraceContextFunc(func(context.Context) (string, string) { return "4bf92f", "00f067" })
+	t.Cleanup(func() { SetTraceContextFunc(nil) })
+
+	if _, err := Enable(Config{TTL: time.Minute, MatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	Emit(context.Background(), "p.S.M")
+
+	got := c.drain()
+	if len(got) != 1 || got[0].TraceID != "4bf92f" || got[0].SpanID != "00f067" {
+		t.Fatalf("got %+v, want one event carrying the trace ids", got)
+	}
+}
+
+func TestMatches(t *testing.T) {
+	reset(t)
+	registerBoth()
+	if Matches(ctxWith("abc-123", "u-42")) {
+		t.Error("Matches is true with the switch off")
+	}
+	if _, err := Enable(Config{TTL: time.Minute, Match: map[string]string{"projectID": "abc-123"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !Matches(ctxWith("abc-123", "u-42")) {
+		t.Error("the targeted identity does not match")
+	}
+	if Matches(ctxWith("zzz-999", "u-7")) {
+		t.Error("an untargeted identity matches")
+	}
+	if Matches(context.Background()) {
+		t.Error("a context with no identity matches")
+	}
+}

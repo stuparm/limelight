@@ -20,8 +20,9 @@ target/
 # go workspace
 go.work.sum
 
-# example binary (go build in examples/go emits a file named "go")
-/examples/go/go
+# example binaries (go build names the output after the directory)
+/examples/go-log/go-log
+/examples/go-log-zap/go-log-zap
 
 # claude code (local, personal)
 CLAUDE.local.md

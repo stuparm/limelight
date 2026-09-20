@@ -8,7 +8,7 @@ traces depends on them, and without it the output is just more logs.
 ```json
 {
   "version": 0,
-  "method": "vnet.Service.CreateThing",
+  "method": "billing.Service.CreateThing",
   "trace_id": "...",
   "span_id": "...",
   "fields": { "user.id": "u-42", "project.id": "abc-123" }

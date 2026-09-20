@@ -1,10 +1,10 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="examples-go" type="GoApplicationRunConfiguration" factoryName="Go Application">
+  <configuration default="false" name="examples-go-zap" type="GoApplicationRunConfiguration" factoryName="Go Application">
     <module name="limelight" />
-    <working_directory value="$PROJECT_DIR$/examples/go" />
+    <working_directory value="$PROJECT_DIR$/examples/go-log-zap" />
     <go_parameters value=" -toolexec=&quot;/tmp/limelight toolexec&quot;" />
     <kind value="PACKAGE" />
-    <package value="github.com/stuparm/limelight/examples/go" />
+    <package value="github.com/stuparm/limelight/examples/go-log-zap" />
     <directory value="$PROJECT_DIR$" />
     <auto_managed_config_id value="$PROJECT_DIR$/examples/go" />
     <method v="2" />

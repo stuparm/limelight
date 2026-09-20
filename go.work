@@ -1,6 +1,10 @@
 go 1.25.0
 
 use (
-	./examples/go
+	./examples/go-log
+	./examples/go-log-zap
+	./examples/go-otel
 	./limelight-go
+	./limelight-go/limelightotel
+	./limelight-go/limelightzap
 )

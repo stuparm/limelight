@@ -52,7 +52,7 @@ func TestEnableAndDisable(t *testing.T) {
 		t.Error("instance is empty; a caller behind a load balancer cannot tell which replica answered")
 	}
 	if state.ExpiresAt == nil {
-		t.Error("expiresAt is missing; the caller cannot tell when it turns itself off")
+		t.Error("expires_at is missing; the caller cannot tell when it turns itself off")
 	}
 	if !limelight.Current().Enabled {
 		t.Error("the switch is not actually on")
@@ -80,7 +80,7 @@ func TestEnableRejects(t *testing.T) {
 		{"ttl not a duration", `{"version":0,"ttl":"soon","match":{"projectID":"abc-123"}}`, http.StatusBadRequest},
 		{"malformed json", `{`, http.StatusBadRequest},
 		{"unknown field", `{"version":0,"ttl":"10m","match":{"projectID":"a"},"who":"me"}`, http.StatusBadRequest},
-		{"methods glob is not implemented", `{"version":0,"ttl":"10m","match":{"projectID":"a"},"methods":["vnet.*"]}`, http.StatusNotImplemented},
+		{"methods glob is not implemented", `{"version":0,"ttl":"10m","match":{"projectID":"a"},"methods":["billing.*"]}`, http.StatusNotImplemented},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Cleanup(func() { limelight.Disable() })
@@ -169,5 +169,92 @@ func TestWrapPassesEverythingElseThrough(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debugging", nil))
 	if got := rec.Body.String(); got != "app" {
 		t.Errorf("/debugging returned %q, want %q", got, "app")
+	}
+}
+
+// The bug this pins: a client speaking a later protocol version sends fields
+// this build has never heard of. Strict decoding would answer with a complaint
+// about an unknown field and never mention versions — useless to the one caller
+// the version field exists to serve.
+func TestVersionIsCheckedBeforeUnknownFields(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	rec := post(t, control.Prefix+"enable", `{"version":1,"ttl":"60s","some_v1_field":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Error, "protocol version") {
+		t.Errorf("error = %q; a future client is not told which version this handler speaks", body.Error)
+	}
+	if strings.Contains(body.Error, "some_v1_field") {
+		t.Errorf("error = %q; it blames a field instead of the version", body.Error)
+	}
+}
+
+// An unknown field at the *right* version is still a client error.
+func TestUnknownFieldAtCurrentVersionStillFails(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	rec := post(t, control.Prefix+"enable", `{"version":0,"ttl":"60s","match":{"projectID":"a"},"typo":1}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestMatchAll(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	rec := post(t, control.Prefix+"enable", `{"version":0,"ttl":"30s","match_all":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
+	}
+	var state limelight.State
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Enabled || state.Targeting != "all" {
+		t.Errorf("state = %+v, want enabled with targeting %q", state, "all")
+	}
+	// The response must carry snake_case keys, not Go field names.
+	if !strings.Contains(rec.Body.String(), `"expires_at"`) {
+		t.Errorf("response is not snake_case: %s", rec.Body)
+	}
+}
+
+func TestMatchAllIsCappedTighterThanMatch(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+
+	// 30m is fine when targeted...
+	rec := post(t, control.Prefix+"enable", `{"version":0,"ttl":"30m","match":{"projectID":"abc-123"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("targeted 30m: status %d, body %s", rec.Code, rec.Body)
+	}
+	limelight.Disable()
+
+	// ...and far too long for a firehose.
+	rec = post(t, control.Prefix+"enable", `{"version":0,"ttl":"30m","match_all":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("match_all 30m: status %d, want 400; body %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "match_all") {
+		t.Errorf("the error does not say which cap applied: %s", rec.Body)
+	}
+	if limelight.Current().Enabled {
+		t.Error("an over-long firehose was armed anyway")
+	}
+}
+
+func TestMatchAndMatchAllTogetherIsRejected(t *testing.T) {
+	t.Cleanup(func() { limelight.Disable() })
+	rec := post(t, control.Prefix+"enable",
+		`{"version":0,"ttl":"30s","match":{"projectID":"abc-123"},"match_all":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
+	}
+	if limelight.Current().Enabled {
+		t.Error("an ambiguous request turned the switch on")
 	}
 }

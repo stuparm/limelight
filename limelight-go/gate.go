@@ -30,21 +30,10 @@ func SetEmitter(e Emitter) {
 // fields:"..." list.
 func Emit(ctx context.Context, method string, names ...string) {
 	a := current.Load()
-	if a == nil {
-		return
-	}
-
 	// Targeting first: a call that does not match the active identity must not
 	// pay for extraction of the fields it would have emitted.
-	for name, want := range a.match {
-		f, ok := lookup(name)
-		if !ok {
-			return
-		}
-		got, ok := f.extract(ctx)
-		if !ok || got != want {
-			return
-		}
+	if !matches(a, ctx) {
+		return
 	}
 
 	h := emitter.Load()
@@ -68,11 +57,47 @@ func Emit(ctx context.Context, method string, names ...string) {
 		fields[f.attrKey] = v
 	}
 
-	h.e.Emit(ctx, Event{
+	ev := Event{
 		Version: EventVersion,
 		Method:  method,
 		Fields:  fields,
-	})
+	}
+	if t := traceContext.Load(); t != nil {
+		ev.TraceID, ev.SpanID = t.f(ctx)
+	}
+	h.e.Emit(ctx, ev)
+}
+
+// Matches reports whether ctx satisfies the active targeting — the same
+// question Emit asks before emitting.
+//
+// It is exported for a sampler: "is limelight watching this request?" is the
+// decision an OpenTelemetry Sampler has to make at span creation, and it must
+// be the identical question, or targeting and sampling would disagree about
+// which requests matter.
+func Matches(ctx context.Context) bool {
+	return matches(current.Load(), ctx)
+}
+
+func matches(a *active, ctx context.Context) bool {
+	if a == nil {
+		return false
+	}
+	// matchAll skips extraction entirely — there is nothing to disagree with.
+	if a.matchAll {
+		return true
+	}
+	for name, want := range a.match {
+		f, ok := lookup(name)
+		if !ok {
+			return false
+		}
+		got, ok := f.extract(ctx)
+		if !ok || got != want {
+			return false
+		}
+	}
+	return true
 }
 
 // On reports whether the switch is currently on.
