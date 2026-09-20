@@ -1,33 +1,64 @@
 # limelight
 
-**On-demand, identity-targeted method tracing.**
+**On-demand, identity-targeted method tracing for Go.**
 
-> *"Trace everything for customer X for the next 10 minutes."*
+> *"Trace everything for customer X for the next ten minutes."*
 
-Tag methods once, at compile time. Then flip a runtime switch — scoped to one identity,
-bounded by a TTL — and only those methods start emitting product-semantic attributes
-(`user.id`, `project.id`, `http.request.id`) into the traces and logs you already have.
-When the TTL expires it turns itself off.
+A customer reports a bug you cannot reproduce. Today you have two options: turn debug
+logging on for everyone and pay for it, or ship a one-off log line and wait for a deploy.
 
-```go
-//limelight:method fields:"requestID,projectID"
-func (s *Service) CreateThing(ctx context.Context, req Request) error {
+limelight is the third one.
+
+```console
+$ curl -XPOST localhost:8080/api/things \
+       -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
+{"created":"widget"}
+# your API, working normally. nothing in the service log — limelight is off.
+
+$ curl -XPOST localhost:6060/debug/limelight/enable \
+       -d '{"version":0,"ttl":"10m","match":{"projectID":"abc-123"}}'
+{"enabled":true,"scope":"pod","instance":"api-7d9f-x2k4",
+ "targeting":"matched","expires_at":"2026-09-20T22:22:52Z"}
+
+$ curl -XPOST localhost:8080/api/things \
+       -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
+{"created":"widget"}
+# and now, in the service log:
+#   {"msg":"limelight","method":"main.Service.CreateThing",
+#    "fields":{"project.id":"abc-123","user.id":"u-42"}}
+
+$ curl -XPOST localhost:8080/api/things \
+       -H 'X-Project-ID: zzz-999' -H 'X-User-ID: u-7' -d '{"name":"gizmo"}'
+{"created":"gizmo"}
+# service log: nothing. same method, a different customer.
+
+# ten minutes later it turns itself off. no deploy, no cleanup, no forgotten flag.
 ```
 
-```http
-POST /debug/limelight/enable
-{ "version": 0, "ttl": "10m", "match": { "projectID": "abc-123" } }
-```
+## How
 
-The tag names a **registered extractor**, not a raw context key — which is what makes it
-work in any codebase:
+Tag the methods once, at compile time. The tag names a **registered extractor**, never a
+raw context key — which is what lets it work in a codebase whose identity lives behind an
+unexported type in some other package:
 
 ```go
 limelight.Register("projectID", project.IDFromContext, limelight.As("project.id"))
+
+//limelight:method fields:"projectID,userID"
+func (s *Service) CreateThing(ctx context.Context, req Request) error {
 ```
 
-Compile-time method tagging is table stakes; otelc, orchestrion and go-instrument all do
-it. **The targeted, expiring switch is the point.**
+Field names map onto OpenTelemetry semantic conventions — `user.id`, not `userID` — so
+the output joins to the traces and logs you already have rather than becoming a third
+place to look.
+
+When the switch is off, a tagged call costs **~1.2 ns and zero allocations**: one atomic
+load and a branch.
+
+Compile-time method tagging is table stakes — otelc, orchestrion and go-instrument all do
+it. **The targeted, expiring switch is the point.** It is not an APM, not a log shipper
+and not a replacement for your tracer; it is a gate in front of the fields you already
+wanted, that somebody can open for one customer and cannot forget to close.
 
 ## Try it
 
@@ -42,28 +73,13 @@ go build -o /tmp/limelight ../../limelight-go/cmd/limelight
 go run -toolexec="/tmp/limelight toolexec" .
 ```
 
-That starts a small REST API on `:8080` and limelight's control endpoint on `:6060`.
-Create something, as one project:
+That is the service from the transcript above — a REST API on `:8080`, limelight's
+control endpoint on `:6060`. Run the four `curl`s and watch it happen.
 
-```bash
-curl -sS -XPOST localhost:8080/api/things \
-  -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
-```
+Then run it again as a plain `go run .`, with no shim. The service behaves identically
+and emits nothing: without the tool in the build, `//limelight:method` is just a comment.
 
-Nothing is emitted. Now turn it on for that one project, for thirty seconds:
-
-```bash
-curl -sS -XPOST localhost:6060/debug/limelight/enable \
-  -d '{"version":0,"ttl":"30s","match":{"projectID":"abc-123"}}'
-```
-
-Repeat the first call and the event appears. Repeat it as any other project and nothing
-does. Thirty seconds later it stops on its own.
-
-Build without the shim — a plain `go run .` — and the directive is an ordinary comment:
-the service behaves identically and emits nothing.
-
-To use it in your own service, install the shim and wire it into your build:
+To wire it into your own service:
 
 ```bash
 go install github.com/stuparm/limelight/limelight-go/cmd/limelight@latest
@@ -76,9 +92,10 @@ go build -toolexec="$(go env GOPATH)/bin/limelight toolexec" ./...
 |---|---|
 | [`spec/`](spec/) | the wire contract every SDK shares — field contract, enable protocol, event schema |
 | [`limelight-go/`](limelight-go/) | Go SDK: registry, switch, `-toolexec` shim, slog emitter. Stdlib-only, by construction — its `go.mod` has no `require` block |
-| [`limelight-go/limelightzap/`](limelight-go/limelightzap/) | zap backend, its own module so the dependency reaches only services that want it |
+| [`limelight-go/limelightzap/`](limelight-go/limelightzap/) | zap backend — its own module, so the dependency reaches only services that want it |
+| [`limelight-go/limelightotel/`](limelight-go/limelightotel/) | OpenTelemetry: trace ids on every event, identity as span attributes, and force-sampling so a trace exists to write to |
 | [`limelight-java/`](limelight-java/) | **planned.** A `pom.xml` and a package doc comment — no Java yet |
-| [`examples/`](examples/) | runnable services — [`go-log`](examples/go-log/) and [`go-log-zap`](examples/go-log-zap/), differing only in the emitter |
+| [`examples/`](examples/) | runnable services — [`go-log`](examples/go-log/), [`go-log-zap`](examples/go-log-zap/) and [`go-otel`](examples/go-otel/) |
 | [`docs/design.md`](docs/design.md) | why it is built this way, and the prior art |
 
 The spec is written as its own thing, ahead of a second SDK, because context models
@@ -87,12 +104,12 @@ the Go SDK exists.
 
 ## Status
 
-**The Go loop works end to end**, and the section above is that walkthrough: tag a
-method, build through the shim, POST the enable endpoint, watch one identity emit while
-every other request through the same method stays silent, watch it stop at the TTL.
+**The Go loop works end to end** — that is what the transcript at the top is.
 
 Working: the registry and `As` mapping, the TTL-bounded switch, the `-toolexec` shim, the
-enable/disable/status endpoint, and emitters for `log/slog` and zap.
+enable/disable/status endpoint, emitters for `log/slog` and zap, and an OpenTelemetry
+integration that puts `trace_id`/`span_id` on every event, the identity on the live span,
+and force-samples the requests you targeted so there is a trace to write to.
 
 Not built yet. The first two are why this is not v1 — both let a mistake pass in silence,
 which is the one thing a tool like this cannot afford:
@@ -104,11 +121,11 @@ which is the one thing a tool like this cannot afford:
 - the **tag ladder**. Only `//limelight:method` exists. Write `//limelight:type` and it is
   parsed as an ordinary comment and discarded without a word — a worse version of the same
   problem, since it looks like a supported feature.
-- **`trace_id` / `span_id`** are always empty. Reading them needs an OpenTelemetry
-  dependency the runtime does not carry, so the join to existing traces that
-  [`spec/event-schema.md`](spec/event-schema.md) describes is not real yet.
 - the **`methods` glob** in the enable protocol returns 501.
-- **limelight-java** is a skeleton.
+- **cross-service targeting**: the identity is evaluated per process, so a downstream
+  service whose context never carried it stays silent. See the open question in
+  [`docs/design.md`](docs/design.md).
+- **limelight-java** — see above.
 
 ## License
 
