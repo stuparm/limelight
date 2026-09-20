@@ -49,8 +49,8 @@ fine, because requirement 2 only asks for named fields.
 
 [golang/go#69887](https://github.com/golang/go/issues/69887) proposes first-class
 compile-time instrumentation in `cmd/go`. If it lands, anything built on `-toolexec`
-rebases or dies. That was the argument that originally pointed at source rewrite; see
-**Decisions** for why it lost and what keeps the rebase cheap.
+rebases or dies. That is the strongest argument for source rewrite; see **Decisions** for
+why it does not win here, and for what keeps the rebase cheap if #69887 lands.
 
 ## Decisions
 
@@ -61,8 +61,8 @@ different package cannot reference them. See [`../spec/field-contract.md`](../sp
 **Field names map onto OTel semantic conventions.** `user.id`, not `userID`. This is what
 makes requirement 3 real.
 
-**Emitters are an interface, not templates** — revised 2026-09-18. The contract lives in
-the root package, and an implementation ships beside it *iff* it costs no dependency
+**Emitters are an interface, not templates.** The contract lives in the root package, and
+an implementation ships beside it *iff* it costs no dependency
 beyond stdlib; `NewLogEmitter` (slog) qualifies, otel and zap get their own packages and
 their own `go.mod`. The template model was borrowed from gowrap, which generates
 *decorators* that must match the user's own interfaces — but `Emitter` has one fixed
@@ -75,23 +75,56 @@ dependency graph of every instrumented leaf package. An OTel-backed emitter in a
 subpackage that root imported would put OpenTelemetry there — invisibly, until the first
 non-stdlib backend landed.
 
-**A `go vet` analyzer ships from day one.** A bare comment directive with no tooling in
-the build is silently ignored — a user tags 200 methods and sees nothing. The analyzer is
-what makes the tag trustworthy.
+**A `go vet` analyzer is required — and is not built.** A bare comment directive with no
+tooling in the build is silently ignored: a user tags 200 methods and sees nothing.
+`-toolexec` makes this sharper than source rewrite would have, because every mistake now
+fails the same silent way — forgetting the shim, mistyping `//limelight:metod`, or writing
+a `:type` rung that does not exist yet all produce no output and no complaint.
 
-**`-toolexec`, not source rewrite**, for v0 — reversed 2026-09-17, having originally
-decided the opposite. The tag takes effect inside an ordinary `go build` / `go run` and
-no rewritten source is ever left on disk. The price is a build-graph constraint source
-rewrite does not have: `cmd/go` computes each package's `importcfg` before the shim is
+Until it exists the tag is not trustworthy, and that is the distance between this design
+and a v1. `limelight-go/analyzer/` is currently a package doc comment with no code in it.
+
+**`-toolexec`, not source rewrite.** The tag takes effect inside an ordinary `go build` /
+`go run`, and no rewritten source is ever left on disk.
+
+Source rewrite (`limelight -w ./...`) is the alternative, and it is the simpler build:
+real code that type-checks, nothing impersonating the compiler, no build-cache
+subtleties. It loses on what it leaves behind — generated lines in the repo, in the IDE
+and in every diff, forever, in exchange for a call nobody reads.
+
+The price of `-toolexec` is a build-graph constraint source rewrite does not have: `cmd/go` computes each package's `importcfg` before the shim is
 invoked and will not add to it, so **a package containing a tagged method must already
 import the limelight runtime**. The shim detects this and fails with the import line to
 add rather than emitting code that cannot compile. go#69887 above remains the standing
 risk, and the reason the rewriter is a library the shim calls rather than a thing welded
 to `-toolexec`.
 
+**OpenTelemetry integration writes to the span already in flight; it does not create
+spans.** Extracted fields become span attributes — request-scoped facts, idempotent to
+write twice, and queryable. The per-method record becomes a span event, which is ordered,
+timestamped, and does not collide when several tagged methods run inside one span. A child
+span per tagged method would give real timing, but it needs a `defer`, which is the cost
+the entry-only decision exists to avoid.
+
+**Force-sampling is what makes "trace everything for customer X" true.** Writing to a span
+is worthless if the host tracer sampled the request away, and at 1% base sampling almost
+all of them are. So the SDK ships a `Sampler` that force-samples a request limelight is
+targeting, asking the same `Matches(ctx)` question the gate asks — targeting and sampling
+cannot disagree about which requests matter.
+
+It cannot rescue everything, and the limit is structural: a sampling decision is made when
+a span is created, from the context as it stands at that moment, while the identity
+arrives later from middleware. In the usual arrangement the server span is created before
+that middleware runs, so it is past saving. What the sampler overrides is the *inherited*
+decision, via `ParentBased` + `WithLocalParentNotSampled`: every span created after the
+identity is known is sampled even though its parent was not. The result is a deliberate
+partial trace — the tagged work present, its HTTP parent absent. A service that extracts
+identity before its tracing middleware gets whole traces with no change to the sampler.
+
 ## Costs, stated rather than discovered
 
-- **Inlining: a budget cost, not the unconditional loss first assumed.** Measured on
+- **Inlining: a budget cost, not the unconditional loss it is usually assumed to be.**
+  Measured on
   go1.27.1/arm64, the injected gate takes a method from inline cost 5 to 69 against the
   inliner's budget of 80 — so a method whose own cost is ≤16 still inlines and anything
   larger falls out. This holds *only* while emission is entry-only. Entry + exit needs a
@@ -110,17 +143,36 @@ to `-toolexec`.
   bill. Authenticate, rate-limit, cap the TTL server-side, audit.
 - **Cardinality:** fine as span attributes and log fields, never as metric labels.
 
-## Open: what the fields ride on
+## Open: whether the fields should also ride on Baggage
 
-Decide by prototype on one real service, not by argument.
+**In-process, this is settled.** A custom emitter reads the registered extractors
+directly. It costs more code than routing everything through OTel Baggage would have, and
+it buys the thing that decides adoption: the `Emitter` interface is what lets a codebase
+with its own logger — no `log/slog` anywhere, a package-level facade over zap — adopt
+limelight in a few lines rather than adopting OpenTelemetry first.
 
-- **A: extractors → OTel Baggage → `baggagecopy`.** Gets most of requirements 2 and 3 for
-  free, including cross-service propagation, and leaves only the directive, the analyzer
-  and the switch to build. Baggage is also the one context abstraction that is identical
-  in every language — which matters for the Java SDK. Counter-argument: baggage propagates
-  over the wire to third parties; a user id in baggage is an egress concern that
-  `ctx.Value` is not.
-- **B: a custom emitter** reading extractors directly. No egress surprise, more code.
+**Cross-service is still open.** Targeting is evaluated per process against a context
+that process built. Service A knows the request belongs to project `abc-123`; service B,
+two hops downstream, holds a context that never carried it, so `Matches` there is false
+and the tagged methods stay silent. "Trace everything for customer X" quietly means
+"everything in the service you POSTed".
+
+Two ways out, and they are not equivalent:
+
+- **Baggage** (`extractors → OTel Baggage → `baggagecopy``) propagates the *identity*, so
+  every downstream service can evaluate targeting itself — including deciding to sample.
+  It is also the one context abstraction that is identical in every language, which is
+  what a second SDK would need. The standing objection: baggage goes over the wire to
+  whoever is next, and a user id in baggage is an egress concern that `ctx.Value` is not.
+- **`tracestate`** propagates the *decision* rather than the identity. Nothing sensitive
+  leaves the process, and the force-sampling Sampler already carries it. But a downstream
+  service can then only honour "this trace is being watched" — it cannot evaluate a
+  predicate it has no data for, so it cannot start watching on its own.
+
+The egress objection was the whole of the case against Baggage when only emission was at
+stake. Sampling changes the balance, because a decision made at the edge is exactly what
+the rest of the call chain needs. Decide by prototype on one real service, not by
+argument.
 
 ## Don't invent the control plane
 

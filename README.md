@@ -77,12 +77,13 @@ go build -toolexec="$(go env GOPATH)/bin/limelight toolexec" ./...
 | [`spec/`](spec/) | the wire contract every SDK shares — field contract, enable protocol, event schema |
 | [`limelight-go/`](limelight-go/) | Go SDK: registry, switch, `-toolexec` shim, slog emitter. Stdlib-only, by construction — its `go.mod` has no `require` block |
 | [`limelight-go/limelightzap/`](limelight-go/limelightzap/) | zap backend, its own module so the dependency reaches only services that want it |
-| [`limelight-java/`](limelight-java/) | Java SDK: registry, switch, `@Limelight` |
+| [`limelight-java/`](limelight-java/) | **planned.** A `pom.xml` and a package doc comment — no Java yet |
 | [`examples/`](examples/) | runnable services — [`go-log`](examples/go-log/) and [`go-log-zap`](examples/go-log-zap/), differing only in the emitter |
 | [`docs/design.md`](docs/design.md) | why it is built this way, and the prior art |
 
-The spec is the reason both SDKs live in one repo: context models diverge per language,
-the field contract and the enable protocol do not.
+The spec is written as its own thing, ahead of a second SDK, because context models
+diverge per language while the field contract and the enable protocol do not. Today only
+the Go SDK exists.
 
 ## Status
 
