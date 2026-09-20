@@ -1,0 +1,22 @@
+22:41:18 created gizmo
+22:41:20 created widget
+22:41:20 created gizmo
+{"time":"22:41:22","level":"INFO","msg":"limelight","version":0,"method":"main.Service.CreateThing","fields":{"project.id":"abc-123","user.id":"u-42"}}
+22:41:22 created widget
+22:41:22 created gizmo
+{"time":"22:41:24","level":"INFO","msg":"limelight","version":0,"method":"main.Service.CreateThing","fields":{"project.id":"abc-123","user.id":"u-42"}}
+22:41:24 created widget
+22:41:24 created gizmo
+{"time":"22:41:26","level":"INFO","msg":"limelight","version":0,"method":"main.Service.CreateThing","fields":{"project.id":"abc-123","user.id":"u-42"}}
+22:41:26 created widget
+22:41:27 created gizmo
+{"time":"22:41:29","level":"INFO","msg":"limelight","version":0,"method":"main.Service.CreateThing","fields":{"project.id":"abc-123","user.id":"u-42"}}
+22:41:29 created widget
+22:41:29 created gizmo
+{"time":"22:41:31","level":"INFO","msg":"limelight","version":0,"method":"main.Service.CreateThing","fields":{"project.id":"abc-123","user.id":"u-42"}}
+22:41:31 created widget
+22:41:31 created gizmo
+22:41:33 created widget
+22:41:33 created gizmo
+22:41:35 created widget
+22:41:35 created gizmo

@@ -1,0 +1,17 @@
+$ curl -XPOST localhost:8080/api/things \
+      -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
+{"created":"widget"}
+
+$ curl -XPOST localhost:6060/debug/limelight/enable \
+      -d '{"version":0,"ttl":"10s","match":{"projectID":"abc-123"}}'
+{
+  "enabled": true,
+  "scope": "pod",
+  "instance": "api-7d9f-x2k4",
+  "targeting": "matched",
+  "expires_at": "2026-09-20T22:41:32.62898+02:00"
+}
+
+$ curl -XPOST localhost:8080/api/things \
+      -H 'X-Project-ID: zzz-999' -H 'X-User-ID: u-7' -d '{"name":"gizmo"}'
+{"created":"gizmo"}

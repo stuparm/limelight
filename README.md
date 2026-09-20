@@ -9,31 +9,20 @@ logging on for everyone and pay for it, or ship a one-off log line and wait for 
 
 limelight is the third one.
 
-```console
-$ curl -XPOST localhost:8080/api/things \
-       -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
-{"created":"widget"}
-# your API, working normally. nothing in the service log — limelight is off.
+You flip the switch for one customer, and say for how long:
 
-$ curl -XPOST localhost:6060/debug/limelight/enable \
-       -d '{"version":0,"ttl":"10m","match":{"projectID":"abc-123"}}'
-{"enabled":true,"scope":"pod","instance":"api-7d9f-x2k4",
- "targeting":"matched","expires_at":"2026-09-20T22:22:52Z"}
+<img src="docs/demo-enable.svg" alt="Terminal: a POST to /api/things returns {&quot;created&quot;:&quot;widget&quot;}; a POST to /debug/limelight/enable with a 10 second TTL targeting projectID abc-123 returns enabled true, scope pod, targeting matched, and an expires_at timestamp; a third request as a different project returns normally." width="660">
 
-$ curl -XPOST localhost:8080/api/things \
-       -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
-{"created":"widget"}
-# and now, in the service log:
-#   {"msg":"limelight","method":"main.Service.CreateThing",
-#    "fields":{"project.id":"abc-123","user.id":"u-42"}}
+That service is serving two customers. Here is its log across the next twenty
+seconds — untouched, and no restart anywhere in it:
 
-$ curl -XPOST localhost:8080/api/things \
-       -H 'X-Project-ID: zzz-999' -H 'X-User-ID: u-7' -d '{"name":"gizmo"}'
-{"created":"gizmo"}
-# service log: nothing. same method, a different customer.
+<img src="docs/demo-logs.svg" alt="Service log. First three lines are plain 'created gizmo' and 'created widget' entries. Then five limelight JSON events appear, one per targeted request, each carrying method main.Service.CreateThing and fields project.id abc-123 and user.id u-42, interleaved with plain lines from the untargeted customer. After ten seconds the JSON events stop and only plain lines remain." width="900">
 
-# ten minutes later it turns itself off. no deploy, no cleanup, no forgotten flag.
-```
+Short lines are the service doing its job. The long ones are limelight, and only
+for `abc-123` — `created gizmo` is the other customer, going through the same
+tagged method, never emitting. Read the timestamps: the first event is `22:41:22`
+and the last is `22:41:31`. That is the TTL closing itself. No deploy, no
+cleanup, no flag left on.
 
 ## How
 
@@ -73,8 +62,21 @@ go build -o /tmp/limelight ../../limelight-go/cmd/limelight
 go run -toolexec="/tmp/limelight toolexec" .
 ```
 
-That is the service from the transcript above — a REST API on `:8080`, limelight's
-control endpoint on `:6060`. Run the four `curl`s and watch it happen.
+That is the service from the images above — a REST API on `:8080`, limelight's control
+endpoint on `:6060`. In another shell:
+
+```bash
+# nothing is emitted
+curl -sS -XPOST localhost:8080/api/things \
+  -H 'X-Project-ID: abc-123' -H 'X-User-ID: u-42' -d '{"name":"widget"}'
+
+# now trace that one project for thirty seconds
+curl -sS -XPOST localhost:6060/debug/limelight/enable \
+  -d '{"version":0,"ttl":"30s","match":{"projectID":"abc-123"}}'
+```
+
+Repeat the first call and the event appears. Repeat it with any other
+`X-Project-ID` and nothing does. Thirty seconds later it stops on its own.
 
 Then run it again as a plain `go run .`, with no shim. The service behaves identically
 and emits nothing: without the tool in the build, `//limelight:method` is just a comment.
