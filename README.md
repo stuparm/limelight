@@ -9,7 +9,7 @@ logging on for everyone and pay for it, or ship a one-off log line and wait for 
 
 limelight is the third one.
 
-You (or your AI agent) flip the switch for one customer, and say for how long:
+You (*or your AI agent*) flip the switch for one customer, and say for how long:
 
 <img src="docs/demo-enable.svg" alt="Terminal: a POST to /api/things returns {&quot;created&quot;:&quot;widget&quot;}; a POST to /debug/limelight/enable with a 10 second TTL targeting projectID abc-123 returns enabled true, scope pod, targeting matched, and an expires_at timestamp; a third request as a different project returns normally." width="660">
 
