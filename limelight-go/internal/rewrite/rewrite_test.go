@@ -177,3 +177,139 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// A malformed directive must be reported on its own line. It used to be
+// reported at the start of the doc comment, which is a different line whenever
+// prose sits above the tag — and the analyzer's diagnostics come from the same
+// position.
+func TestMalformedDirectiveNamesItsOwnLine(t *testing.T) {
+	src := `package p
+
+import "context"
+
+// F does a thing.
+// It does it well.
+//limelight:method fields:projectID
+func F(ctx context.Context) {}
+`
+	_, err := File("p.go", []byte(src))
+	if err == nil {
+		t.Fatal("no error for malformed directive")
+	}
+	if !strings.HasPrefix(err.Error(), "p.go:7:1:") {
+		t.Errorf("error = %q, want it positioned at p.go:7:1, the directive's own line", err)
+	}
+}
+
+// Only the first directive in a doc comment ever took effect. A second one is
+// now a warning — and only a warning: its fields are not judged, so a build
+// that passed before this check existed still passes.
+func TestSecondDirectiveIsAWarningNotAnError(t *testing.T) {
+	src := `package p
+
+import "context"
+
+//limelight:method fields:"projectID"
+//limelight:method fields:userID
+func F(ctx context.Context) {}
+`
+	res, err := File("p.go", []byte(src))
+	if err != nil {
+		t.Fatalf("a malformed second directive fails the build: %v", err)
+	}
+	if res.Count != 1 {
+		t.Errorf("Count = %d, want 1", res.Count)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "p.go:6:1: a second //limelight:method") {
+		t.Errorf("Warnings = %q, want one at p.go:6:1 about a second directive", res.Warnings)
+	}
+	if !strings.Contains(string(res.Source), `"p.F", "projectID") };`) {
+		t.Errorf("the first directive's fields were not the ones instrumented:\n%s", res.Source)
+	}
+}
+
+// A near-miss directive is prose to the compiler. The shim now says so — even
+// beside a valid directive in the same doc comment, which the sweep for
+// unattached directives used to skip wholesale.
+func TestNearMissIsAWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{
+			name: "unimplemented rung",
+			src: `package p
+//limelight:type fields:"projectID"
+type T struct{}
+`,
+			want: "p.go:2:1: //limelight:type is not implemented",
+		},
+		{
+			name: "beside a valid directive",
+			src: `package p
+import "context"
+//limelight:method fields:"projectID"
+//limelight:metod fields:"userID"
+func F(ctx context.Context) {}
+`,
+			want: "p.go:4:1: unknown directive //limelight:metod",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := File("p.go", []byte(tc.src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], tc.want) {
+				t.Errorf("Warnings = %q, want one containing %q", res.Warnings, tc.want)
+			}
+		})
+	}
+}
+
+// File stops at the first malformed directive; Scan, which the analyzer reads,
+// must report every one of them.
+func TestScanReportsEveryProblem(t *testing.T) {
+	src := `package p
+
+import "context"
+
+//limelight:method
+func A(ctx context.Context) {}
+
+//limelight:method fields: "projectID"
+func B(ctx context.Context) {}
+
+//limelight:method fields:"projectID"
+func C(name string) {}
+
+//limelight:method fields:"projectID"
+func D(ctx context.Context) {}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagged, problems := Scan(f)
+	if len(tagged) != 1 || tagged[0].Fn.Name.Name != "D" || tagged[0].Ctx != "ctx" {
+		t.Errorf("tagged = %+v, want only D with ctx", tagged)
+	}
+	want := []struct {
+		line int
+		err  bool
+		msg  string
+	}{
+		{5, true, "missing fields"},
+		{8, true, "no space allowed after fields:"},
+		{12, false, "takes no context.Context"},
+	}
+	if len(problems) != len(want) {
+		t.Fatalf("got %d problems, want %d: %+v", len(problems), len(want), problems)
+	}
+	for i, w := range want {
+		p := problems[i]
+		if line := fset.Position(p.Pos).Line; line != w.line || p.Err != w.err || !strings.Contains(p.Msg, w.msg) {
+			t.Errorf("problem %d = line %d, Err %v, %q; want line %d, Err %v, containing %q", i, line, p.Err, p.Msg, w.line, w.err, w.msg)
+		}
+	}
+}

@@ -1,6 +1,6 @@
 # limelight-go
 
-Go SDK. **The loop works end to end; the vet analyzer and the tag ladder do not exist yet.**
+Go SDK. **The loop works end to end, and `limelight-vet` catches a tag that cannot work; the tag ladder does not exist yet.**
 
 ```
 limelight.go, config.go, gate.go   registry, As(), the switch, the hot-path gate
@@ -9,8 +9,9 @@ control/                           http.Handler for the enable protocol
 control/auto/                      optional pprof-style blank-import registration
 limelightzap/                      zap backend — its own module, so zap stays out
                                    of the go.sum of services that do not use it
-analyzer/                          go/analysis pass — NOT IMPLEMENTED
-internal/directive/                //limelight:method parser
+analyzer/                          go vet analyzer + limelight-vet — its own module,
+                                   since go/analysis is golang.org/x/tools
+internal/directive/                //limelight:method parser + near-miss detection
 internal/rewrite/                  the AST injection
 internal/toolexec/                 the -toolexec driver
 cmd/limelight/                     the shim binary
@@ -81,6 +82,25 @@ go build -toolexec="/tmp/limelight toolexec" ./...
 
 The shim rewrites in memory: nothing on disk changes, and a build without it produces a
 binary that emits nothing.
+
+A tag that cannot work still builds. Run the analyzer beside vet — `-vettool` replaces
+vet's standard passes rather than adding to them:
+
+```
+go build -o /tmp/limelight-vet ./limelight-go/analyzer/cmd/limelight-vet   # in a clone
+go vet ./... && go vet -vettool=/tmp/limelight-vet ./...
+```
+
+It reports, at the line to fix:
+
+- a malformed directive — `fields: "a"`, `fields:a`, a field listed twice, trailing text;
+- one the compiler reads as prose — `// limelight:method`, `//limelight: method`,
+  `//Limelight:method`, `//limelight:metod`, `//limelight:type`, `/* limelight:method */`;
+- a tag on a method with no `context.Context` (or one named `_`), on a declaration with no
+  body, or not on a function at all — and a second directive in one doc comment;
+- a package with tagged methods that does not import this module from a non-test file.
+
+Its verdicts on a tag are the shim's own: both come from one function, `rewrite.Scan`.
 
 ## Two constraints worth knowing before you adopt it
 
