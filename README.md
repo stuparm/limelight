@@ -88,6 +88,19 @@ go install github.com/stuparm/limelight/limelight-go/cmd/limelight@latest
 go build -toolexec="$(go env GOPATH)/bin/limelight toolexec" ./...
 ```
 
+A tag that cannot work — misspelled, a space after the `//`, on a method with no
+`context.Context`, in a package that never imports the runtime — still builds, and emits
+nothing on the day you need it. `limelight-vet` reports every one of them:
+
+```bash
+go build -o /tmp/limelight-vet ./limelight-go/analyzer/cmd/limelight-vet   # in a clone
+go vet ./... && go vet -vettool=/tmp/limelight-vet ./...
+```
+
+`-vettool` replaces vet's standard passes rather than adding to them, hence the two runs.
+It is built from a clone for now: its module reaches the runtime through a `replace`,
+which `go install …@latest` refuses.
+
 ## Layout
 
 | | |
@@ -96,6 +109,7 @@ go build -toolexec="$(go env GOPATH)/bin/limelight toolexec" ./...
 | [`limelight-go/`](limelight-go/) | Go SDK: registry, switch, `-toolexec` shim, slog emitter. Stdlib-only, by construction — its `go.mod` has no `require` block |
 | [`limelight-go/limelightzap/`](limelight-go/limelightzap/) | zap backend — its own module, so the dependency reaches only services that want it |
 | [`limelight-go/limelightotel/`](limelight-go/limelightotel/) | OpenTelemetry: trace ids on every event, identity as span attributes, and force-sampling so a trace exists to write to |
+| [`limelight-go/analyzer/`](limelight-go/analyzer/) | `go vet` analyzer and the `limelight-vet` binary — its own module, since it needs `golang.org/x/tools` |
 | [`limelight-java/`](limelight-java/) | **planned.** A `pom.xml` and a package doc comment — no Java yet |
 | [`examples/`](examples/) | runnable services — [`go-log`](examples/go-log/), [`go-log-zap`](examples/go-log-zap/) and [`go-otel`](examples/go-otel/) |
 | [`docs/design.md`](docs/design.md) | why it is built this way, and the prior art |
@@ -109,20 +123,20 @@ the Go SDK exists.
 **The Go loop works end to end** — that is what the transcript at the top is.
 
 Working: the registry and `As` mapping, the TTL-bounded switch, the `-toolexec` shim, the
-enable/disable/status endpoint, emitters for `log/slog` and zap, and an OpenTelemetry
+enable/disable/status endpoint, emitters for `log/slog` and zap, an OpenTelemetry
 integration that puts `trace_id`/`span_id` on every event, the identity on the live span,
-and force-samples the requests you targeted so there is a trace to write to.
+and force-samples the requests you targeted so there is a trace to write to — and
+`limelight-vet`, the `go vet` analyzer that reports every directive that cannot take
+effect, with the same verdicts the shim reaches.
 
-Not built yet. The first two are why this is not v1 — both let a mistake pass in silence,
-which is the one thing a tool like this cannot afford:
+The analyzer cannot see two things: a build that forgot the shim, and a `fields:` name
+nobody registered — `Register` is a runtime call.
 
-- the **`go vet` analyzer**. A directive is a comment, so nothing in the Go toolchain
-  objects to a tag that cannot work — a method with no `context.Context`, or a `fields:`
-  name nobody registered. Without the analyzer you find out in production, when you flip
-  the switch during an incident and nothing comes out.
-- the **tag ladder**. Only `//limelight:method` exists. Write `//limelight:type` and it is
-  parsed as an ordinary comment and discarded without a word — a worse version of the same
-  problem, since it looks like a supported feature.
+Not built yet:
+
+- the **tag ladder**. Only `//limelight:method` exists. `//limelight:type`, `:package` and
+  `:skip` are reported by `limelight-vet` and warned about by the shim as not
+  implemented, and do nothing.
 - the **`methods` glob** in the enable protocol returns 501.
 - **cross-service targeting**: the identity is evaluated per process, so a downstream
   service whose context never carried it stays silent. See the open question in

@@ -5,6 +5,7 @@ use (
 	./examples/go-log-zap
 	./examples/go-otel
 	./limelight-go
+	./limelight-go/analyzer
 	./limelight-go/limelightotel
 	./limelight-go/limelightzap
 )

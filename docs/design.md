@@ -75,14 +75,46 @@ dependency graph of every instrumented leaf package. An OTel-backed emitter in a
 subpackage that root imported would put OpenTelemetry there — invisibly, until the first
 non-stdlib backend landed.
 
-**A `go vet` analyzer is required — and is not built.** A bare comment directive with no
-tooling in the build is silently ignored: a user tags 200 methods and sees nothing.
-`-toolexec` makes this sharper than source rewrite would have, because every mistake now
-fails the same silent way — forgetting the shim, mistyping `//limelight:metod`, or writing
-a `:type` rung that does not exist yet all produce no output and no complaint.
+**A `go vet` analyzer reports every directive that cannot take effect.** A bare comment
+directive with no tooling in the build is silently ignored: a user tags 200 methods and
+sees nothing. `-toolexec` makes this sharper than source rewrite would have, because every
+mistake fails the same silent way — mistyping `//limelight:metod`, writing a `:type` rung
+that does not exist yet, tagging a method with no `context.Context`. `limelight-vet`
+(`limelight-go/analyzer/`) reports each of them.
 
-Until it exists the tag is not trustworthy, and that is the distance between this design
-and a v1. `limelight-go/analyzer/` is currently a package doc comment with no code in it.
+- **It asks the rewriter instead of deciding for itself.** `rewrite.Scan` is the one
+  function that decides whether a tag takes effect: the shim instruments exactly what it
+  returns, the analyzer reports exactly the problems it returns. The analyzer does not
+  type-check the context parameter, on purpose — go/types accepts
+  `type Ctx = context.Context`, which the rewriter's syntactic match skips, and an
+  analyzer smarter than the shim passes code the shim then ignores.
+- **It is its own module**, because `go/analysis` lives in `golang.org/x/tools` and the
+  root `go.mod` has no `require`. It imports `limelight-go/internal/...` across the module
+  boundary, which is legal only because Go's internal rule goes by import path and
+  `…/limelight-go/analyzer` sits under `…/limelight-go/`. Moving it anywhere else breaks
+  that.
+- **Near-misses are judged by shape.** `//word:word` with no space is directive syntax,
+  never prose, so anything wrong there is reported unconditionally. A space after `//` or
+  around the colon is also how people write prose about limelight — and what gofmt turns
+  `//Limelight:method` into, since it puts a space after the `//` of any doc-comment line
+  that is not directive-shaped. So that shape is reported only when the verb is
+  recognisably `method` and nothing follows it but `fields:`. A false positive fails
+  somebody's CI over a comment.
+- **The import check is the analyzer's own**, because the shim reads the package's
+  `importcfg` and vet never sees it. The import must be direct — measured: one that
+  arrives through another package is not in the importcfg and the shim refuses the build —
+  and a tag in a non-test file needs it in a non-test file. That makes one intended
+  disagreement: an import only a `_test.go` file carries satisfies `go test -toolexec`,
+  fails `go build -toolexec`, and the analyzer reports it.
+- **What it cannot see:** a build that forgot the shim, since vet never sees `-toolexec`
+  (`examples/go-otel/main_test.go` shows the guard a test needs), and a `fields:` name
+  nobody registered, since `Register` is a runtime call, possibly in another package.
+- `-vettool` replaces vet's standard passes rather than adding to them, so the invocation
+  is `go vet ./... && go vet -vettool=$(which limelight-vet) ./...`. `analyzer.Analyzer`
+  is what gopls and golangci-lint take.
+
+The shim prints the analyzer's near-miss and duplicate-directive verdicts too, as
+warnings. Promoting them to build errors is a separate decision.
 
 **`-toolexec`, not source rewrite.** The tag takes effect inside an ordinary `go build` /
 `go run`, and no rewritten source is ever left on disk.

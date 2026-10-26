@@ -50,6 +50,111 @@ type splice struct {
 	text   string
 }
 
+// MissingImport is what is wrong with a package that holds a tagged method but
+// does not import the runtime, and how to fix it. The shim and the vet analyzer
+// both say it, so the two cannot drift apart.
+//
+// It says "non-test file" because that is what go build sees: an import only a
+// _test.go file carries satisfies go test and still fails go build.
+const MissingImport = "does not import " + RuntimePath + ", and -toolexec cannot add to the build graph. " +
+	"Add  import _ \"" + RuntimePath + "\"  to any non-test file of the package"
+
+// Problem is a directive that cannot work as written.
+type Problem struct {
+	Pos token.Pos
+	// Msg says what is wrong. It carries no position; the caller holds the
+	// FileSet to format Pos with.
+	Msg string
+	// Err marks a malformed directive, which File refuses to build past. Every
+	// other problem leaves its method uninstrumented and the build going.
+	Err bool
+}
+
+// Tagged is a method the rewriter instruments.
+type Tagged struct {
+	Fn        *ast.FuncDecl
+	Directive *ast.Comment
+	Method    directive.Method
+	// Ctx is the name of the context.Context parameter the gate reads.
+	Ctx string
+}
+
+// Scan finds every tagged method in f, and every directive that cannot work as
+// written.
+//
+// It is the one place that decides whether a tag takes effect: File
+// instruments exactly the methods it returns, and the vet analyzer reports
+// exactly the problems it returns, so the two cannot disagree about a tag.
+func Scan(f *ast.File) (tagged []Tagged, problems []Problem) {
+	ctxLocal := importLocalName(f, "context", "context")
+	// judged holds the directives the declaration loop has ruled on, so the
+	// sweep over every comment below does not rule on them twice.
+	judged := map[*ast.Comment]bool{}
+
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Doc == nil {
+			continue
+		}
+		var first *ast.Comment
+		var m directive.Method
+		malformed := false
+		for _, c := range fn.Doc.List {
+			parsed, isDirective, err := directive.Parse(c.Text)
+			if !isDirective {
+				continue
+			}
+			judged[c] = true
+			if first != nil {
+				// Not judged on its fields: only the first directive ever took
+				// effect, and a field error in one that never did must not start
+				// failing a build that passes today.
+				problems = append(problems, Problem{Pos: c.Pos(), Msg: fmt.Sprintf("a second %s in this doc comment is ignored — list every field in the first", directive.Prefix)})
+				continue
+			}
+			first = c
+			if err != nil {
+				problems = append(problems, Problem{Pos: c.Pos(), Msg: err.Error(), Err: true})
+				malformed = true
+				continue
+			}
+			m = parsed
+		}
+		if first == nil || malformed {
+			continue
+		}
+		if fn.Body == nil {
+			problems = append(problems, Problem{Pos: fn.Pos(), Msg: fmt.Sprintf("%s on %s, which has no body", directive.Prefix, fn.Name.Name)})
+			continue
+		}
+		ctxName, ok := contextParam(fn, ctxLocal)
+		if !ok {
+			problems = append(problems, Problem{Pos: fn.Pos(), Msg: fmt.Sprintf("%s on %s, which takes no context.Context — nothing to extract from", directive.Prefix, fn.Name.Name)})
+			continue
+		}
+		tagged = append(tagged, Tagged{Fn: fn, Directive: first, Method: m, Ctx: ctxName})
+	}
+
+	// A directive that is not a function's doc comment is inert, and so is one
+	// that is almost a directive: the compiler ignores both and the user sees
+	// nothing. Say so.
+	for _, group := range f.Comments {
+		for _, c := range group.List {
+			if judged[c] {
+				continue
+			}
+			if _, isDirective, _ := directive.Parse(c.Text); isDirective {
+				problems = append(problems, Problem{Pos: c.Pos(), Msg: fmt.Sprintf("%s is not attached to a function declaration, so it does nothing", directive.Prefix)})
+				continue
+			}
+			if msg, suspect := directive.Suspect(c.Text); suspect {
+				problems = append(problems, Problem{Pos: c.Pos(), Msg: msg})
+			}
+		}
+	}
+	return tagged, problems
+}
+
 // File rewrites src, injecting a gate call as the first statement of every
 // method carrying a //limelight:method directive.
 //
@@ -62,58 +167,27 @@ func File(filename string, src []byte) (Result, error) {
 		return Result{}, err
 	}
 
+	tagged, problems := Scan(f)
 	var res Result
-	var splices []splice
-
-	pkgName := f.Name.Name
-	ctxLocal := importLocalName(f, "context", "context")
-	tagged := map[*ast.CommentGroup]bool{}
-
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Doc == nil {
-			continue
+	for _, p := range problems {
+		if p.Err {
+			return Result{}, fmt.Errorf("%s: %s", position(fset, p.Pos), p.Msg)
 		}
-		m, found, derr := parseDoc(fn.Doc, tagged)
-		if derr != nil {
-			return Result{}, fmt.Errorf("%s: %w", position(fset, fn.Doc.Pos()), derr)
-		}
-		if !found {
-			continue
-		}
-		if fn.Body == nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: %s on %s, which has no body", position(fset, fn.Pos()), directive.Prefix, fn.Name.Name))
-			continue
-		}
-		ctxName, ok := contextParam(fn, ctxLocal)
-		if !ok {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: %s on %s, which takes no context.Context — nothing to extract from", position(fset, fn.Pos()), directive.Prefix, fn.Name.Name))
-			continue
-		}
-
-		splices = append(splices, splice{
-			offset: fset.Position(fn.Body.Lbrace).Offset + 1,
-			text:   gateCall(ctxName, methodLabel(pkgName, fn), m.Fields),
-		})
-		res.Count++
+		res.Warnings = append(res.Warnings, fmt.Sprintf("%s: %s", position(fset, p.Pos), p.Msg))
 	}
-
-	// A directive that is not a function's doc comment is inert: the compiler
-	// ignores it and the user sees nothing. Say so.
-	for _, group := range f.Comments {
-		if tagged[group] {
-			continue
-		}
-		for _, c := range group.List {
-			if _, isDirective, _ := directive.Parse(c.Text); isDirective {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: %s is not attached to a function declaration, so it does nothing", position(fset, c.Pos()), directive.Prefix))
-			}
-		}
-	}
-
-	if res.Count == 0 {
+	if len(tagged) == 0 {
 		return res, nil
 	}
+
+	pkgName := f.Name.Name
+	var splices []splice
+	for _, t := range tagged {
+		splices = append(splices, splice{
+			offset: fset.Position(t.Fn.Body.Lbrace).Offset + 1,
+			text:   gateCall(t.Ctx, methodLabel(pkgName, t.Fn), t.Method.Fields),
+		})
+	}
+	res.Count = len(tagged)
 
 	local := importLocalName(f, RuntimePath, runtimePkg)
 	if local == "" {
@@ -131,22 +205,6 @@ func File(filename string, src []byte) (Result, error) {
 
 	res.Source = apply(src, splices)
 	return res, nil
-}
-
-// parseDoc finds a limelight directive in a doc comment group.
-func parseDoc(doc *ast.CommentGroup, tagged map[*ast.CommentGroup]bool) (directive.Method, bool, error) {
-	for _, c := range doc.List {
-		m, isDirective, err := directive.Parse(c.Text)
-		if !isDirective {
-			continue
-		}
-		tagged[doc] = true
-		if err != nil {
-			return directive.Method{}, true, err
-		}
-		return m, true, nil
-	}
-	return directive.Method{}, false, nil
 }
 
 // gateCall builds the injected statement. \x00 stands in for the runtime's

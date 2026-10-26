@@ -15,6 +15,7 @@
 // zap backend belongs in its own package with its own go.mod. Those import
 // this package; this package never imports them.
 //
-// Anything heavy that is not on that path — AST rewriting, static analysis —
-// lives under cmd/ and internal/.
+// Anything heavy that is not on that path lives elsewhere: AST rewriting under
+// cmd/ and internal/, and the vet analyzer, which needs golang.org/x/tools, in
+// its own module under analyzer/.
 package limelight

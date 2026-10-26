@@ -67,8 +67,8 @@ func panicLine(t *testing.T) int {
 	return 0
 }
 
-// setup writes the fixture module and builds the shim.
-func setup(t *testing.T) (dir, shim string) {
+// setup writes src as the fixture module's main.go and builds the shim.
+func setup(t *testing.T, src string) (dir, shim string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("builds two binaries")
@@ -88,7 +88,7 @@ func setup(t *testing.T) (dir, shim string) {
 			t.Fatal(err)
 		}
 	}
-	write("main.go", program)
+	write("main.go", src)
 	write("go.mod", fmt.Sprintf(`module limelightfixture
 
 go 1.23
@@ -128,7 +128,7 @@ func run(t *testing.T, dir string, toolexec string) (stdout, stderr string) {
 }
 
 func TestToolexecInstrumentsTheTag(t *testing.T) {
-	dir, shim := setup(t)
+	dir, shim := setup(t, program)
 	stdout, stderr := run(t, dir, shim)
 
 	events := strings.Count(stdout, `"msg":"limelight"`)
@@ -146,7 +146,7 @@ func TestToolexecInstrumentsTheTag(t *testing.T) {
 // carries a //line directive back to the original. A panic must therefore name
 // the user's file at the user's line, not a temp path.
 func TestInstrumentedPanicKeepsItsPosition(t *testing.T) {
-	dir, shim := setup(t)
+	dir, shim := setup(t, program)
 	_, stderr := run(t, dir, shim)
 
 	want := fmt.Sprintf("main.go:%d", panicLine(t))
@@ -161,7 +161,7 @@ func TestInstrumentedPanicKeepsItsPosition(t *testing.T) {
 // Without the shim the directive is an ordinary comment: the program runs and
 // emits nothing. This is the property the vet analyzer exists to make visible.
 func TestWithoutTheShimTheTagIsInert(t *testing.T) {
-	dir, _ := setup(t)
+	dir, _ := setup(t, program)
 	stdout, stderr := run(t, dir, "")
 
 	if strings.Contains(stdout, `"msg":"limelight"`) {
@@ -170,5 +170,41 @@ func TestWithoutTheShimTheTagIsInert(t *testing.T) {
 	want := fmt.Sprintf("main.go:%d", panicLine(t))
 	if !strings.Contains(stderr, want) {
 		t.Errorf("uninstrumented panic does not report %s:\n%s", want, stderr)
+	}
+}
+
+// unimported is a package with a tagged method and no import of the runtime.
+const unimported = `package main
+
+import "context"
+
+//limelight:method fields:"projectID"
+func M(ctx context.Context) {}
+
+func main() { M(context.Background()) }
+`
+
+// The shim cannot add the runtime to a package's build graph, so a tagged
+// package that does not import it must fail the build and say how to fix it.
+// "non-test file" is load-bearing: an import only a _test.go file carries
+// satisfies go test and still fails go build.
+func TestMissingImportFailsTheBuild(t *testing.T) {
+	dir, shim := setup(t, unimported)
+
+	cmd := exec.Command("go", "build", "-o", os.DevNull, "-toolexec="+shim+" toolexec", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("build succeeded; want the shim to refuse it\n%s", out)
+	}
+	for _, want := range []string{
+		"has 1 tagged method(s) but does not import github.com/stuparm/limelight/limelight-go",
+		`import _ "github.com/stuparm/limelight/limelight-go"`,
+		"non-test file",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }

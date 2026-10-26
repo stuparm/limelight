@@ -8,9 +8,10 @@ emit product-semantic attributes into the traces and logs a service already has.
 does not exist yet. `limelight-java/` is a `pom.xml` and a package doc comment with no
 Java in it: no `@Limelight`, no registry, no switch. Treat every claim about it as a plan.
 
-**Status: the Go loop works end to end.** The `go vet` analyzer and the tag ladder
-(`:package`/`:type`/`:skip`) are also unbuilt — do not assume a symbol exists because a
-package is named after it.
+**Status: the Go loop works end to end,** and `limelight-vet` (`limelight-go/analyzer/`)
+reports a directive that cannot take effect. The tag ladder (`:package`/`:type`/`:skip`)
+is unbuilt — those directives are reported as not implemented. Do not assume a symbol
+exists because a package is named after it.
 
 ## Rules
 
@@ -47,8 +48,9 @@ happen. Never put these high-cardinality fields on metric labels.
 spells them. Do not normalise those.
 
 **9. Nothing may fail silently.** A directive that cannot work must produce a build error
-or a warning — never nothing. This is the one rule the project exists to enforce, and the
-one it currently breaks: `//limelight:type` is discarded without a word.
+or a warning — never nothing. This is the one rule the project exists to enforce. The shim
+and `limelight-vet` both take their verdicts from `rewrite.Scan`: a new check goes there,
+never into the analyzer alone, or the two start disagreeing about which tags work.
 
 **10. The off-path budget is ~1.2 ns and zero allocations.** Benchmark before and after
 touching `Emit`, `On` or the injected call shape. The guard is why generated code is
@@ -75,23 +77,26 @@ asked.
 | the `-toolexec` shim and AST injection | `limelight-go/internal/{toolexec,rewrite,directive}` |
 | the enable/disable/status endpoint | `limelight-go/control/`, `control/auto/` for blank-import registration |
 | zap and OpenTelemetry backends | `limelight-go/limelightzap/`, `limelight-go/limelightotel/` |
+| the `go vet` analyzer and `limelight-vet` | `limelight-go/analyzer/` — its own module; verdicts from `internal/rewrite.Scan` |
 | a runnable service, and the shim's test fixture | `examples/go-log`, `go-log-zap`, `go-otel` |
 | what is deliberately not built yet | `README.md` Status section |
 
 ## Commands
 
 The repo root is **not** a module, so `go build ./...` fails there. `go.work` lists the
-six Go modules.
+seven Go modules.
 
 ```bash
 # build everything
-go build ./limelight-go/... ./limelight-go/limelightotel/... ./limelight-go/limelightzap/... \
-         ./examples/go-log/... ./examples/go-log-zap/... ./examples/go-otel/...
+go build ./limelight-go/... ./limelight-go/analyzer/... ./limelight-go/limelightotel/... \
+         ./limelight-go/limelightzap/... ./examples/go-log/... ./examples/go-log-zap/... \
+         ./examples/go-otel/...
 
 # test — per module, each from the repo root
 (cd limelight-go               && go vet ./... && go test ./...)
 (cd limelight-go/limelightotel && go vet ./... && go test ./...)
 (cd limelight-go/limelightzap  && go vet ./... && go test ./...)
+(cd limelight-go/analyzer      && go vet ./... && go test ./...)
 (cd limelight-java             && mvn -q verify)   # nothing to build yet; compiles an empty package
 ```
 
@@ -104,6 +109,17 @@ cd examples/go-log && go run -toolexec="/tmp/limelight toolexec" .
 # and for any test that asserts the tag fires
 go test -toolexec="/tmp/limelight toolexec" ./...
 ```
+
+The analyzer, over any module — `-vettool` replaces vet's own passes, so run both:
+
+```bash
+go build -o /tmp/limelight-vet ./limelight-go/analyzer/cmd/limelight-vet
+cd examples/go-log && go vet ./... && go vet -vettool=/tmp/limelight-vet ./...
+```
+
+Its testdata is gofmt-clean on purpose: gofmt moves a doc comment's directive lines to the
+end behind a blank `//`, so a `// want +N` offset written by hand breaks on the next
+format-on-save. Run `gofmt -l limelight-go/analyzer` after editing it.
 
 `LIMELIGHT_VERBOSE=1` makes the shim report each method it instruments. Examples bind
 `:8080` and `:6060` — check for a stale process before concluding something is broken.

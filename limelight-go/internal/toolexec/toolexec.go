@@ -105,11 +105,7 @@ func instrument(args []string) (out []string, cleanup func(), err error) {
 	// it, so a package that does not already import limelight cannot be
 	// instrumented. Refusing loudly beats emitting code that cannot compile.
 	if !importable(flagValue(args, "-importcfg")) {
-		return nil, cleanup, fmt.Errorf(
-			"package %s has %d tagged method(s) but does not import %s.\n"+
-				"       -toolexec cannot add to the build graph. Add an import to any file in the package:\n"+
-				"           import _ %q",
-			pkg, total, rewrite.RuntimePath, rewrite.RuntimePath)
+		return nil, cleanup, fmt.Errorf("package %s has %d tagged method(s) but %s", pkg, total, rewrite.MissingImport)
 	}
 
 	dir, derr := os.MkdirTemp("", "limelight-")
